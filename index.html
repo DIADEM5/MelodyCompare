@@ -1,107 +1,77 @@
-
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MelodyCompare</title>
+  <meta name="theme-color" content="#ffffff">
+  <title>MelodyCompare — Melody editing workspace</title>
   <link rel="stylesheet" href="style.css">
 </head>
-
 <body>
-  <main class="app">
-    <header>
-      <h1>🎵 MelodyCompare</h1>
-      <p>Melody Similarity Feedback and Creative Control</p>
-      <p class="subtitle">
-        Compare, listen to, and revise melodies.
-      </p>
+  <main class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#top"><span class="brand-mark">♫</span><span>MelodyCompare<small>Melody comparison &amp; creation workspace</small></span></a>
+      <span class="privacy-note"><i></i>Audio stays in your browser</span>
     </header>
-
-    <section class="toolbar">
-      <button id="suggestBtn">
-        Generate Simulated AI Suggestion
-      </button>
-      <button id="playOriginalBtn">
-        ▶ Play Original
-      </button>
-      <button id="playRevisedBtn">
-        ▶ Play Revision
-      </button>
+    <section class="intro" id="top">
+      <div><p class="eyebrow">MELODY SIMILARITY FEEDBACK</p><h1>Hear the change. <span>Make it yours.</span></h1><p class="subtitle">Import audio or describe a scene. Move the notes, listen to your changes, and compare versions.</p></div>
     </section>
-
-    <fieldset class="mode-switch">
-      <legend>Choose Feedback Mode</legend>
-
-      <label>
-        <input type="radio" name="feedbackMode"
-               value="global" checked>
-        Global Similarity Score
-      </label>
-
-      <label>
-        <input type="radio" name="feedbackMode"
-               value="local">
-        Local Fragment Feedback
-      </label>
-    </fieldset>
-
-    <section id="globalPanel" class="panel">
-      <h2>Global Similarity Feedback</h2>
-      <div class="score-line">
-        <strong id="similarityScore">75%</strong>
-        <span id="matchCount"></span>
+    <section class="source-card card" aria-label="Audio source">
+      <div class="source-tabs" role="tablist" aria-label="Choose an audio source">
+        <button class="source-tab active" id="uploadTab" type="button" role="tab" aria-selected="true" aria-controls="uploadSource">Import local audio</button>
+        <button class="source-tab" id="generateTab" type="button" role="tab" aria-selected="false" aria-controls="generateSource">Create from a scene</button>
       </div>
-      <div class="meter">
-        <div id="scoreBar" class="meter-fill"></div>
+      <div id="uploadSource" class="source-content" role="tabpanel">
+        <input id="audioFile" type="file" accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.flac,.webm" hidden>
+        <div class="upload-drop" id="dropZone" tabindex="0" role="button" aria-label="Choose or drop an audio file">
+          <span class="upload-icon">↑</span><div><strong>Drop an audio file here</strong><span>WAV, MP3 and other browser-supported formats · up to 5 minutes / 50 MB</span></div><button class="button button-dark" id="chooseFileBtn" type="button">Choose file</button>
+        </div>
+        <p class="fine-print">Imported audio becomes editable time slices. Pitch controls transpose those slices; they do not claim to detect the recording's melody.</p>
       </div>
-      <p class="hint">
-        Similarity is calculated by comparing
-        the pitch of notes at the same positions.
-      </p>
+      <div id="generateSource" class="source-content hidden" role="tabpanel">
+        <label class="prompt-label" for="scenePrompt">Describe the scene you want to hear</label>
+        <div class="prompt-row"><input id="scenePrompt" type="text" maxlength="160" placeholder="For example: a gentle piano melody on a rainy evening"><button class="button button-primary" id="generateBtn" type="button">✦ Generate melody</button></div>
+        <div class="generator-options"><label>Mood<select id="moodSelect"><option value="follow">Follow description</option><option value="calm">Calm</option><option value="bright">Bright</option><option value="dreamy">Dreamy</option><option value="sad">Sad</option><option value="energetic">Energetic</option></select></label><label>Tempo <span id="tempoValue">96 BPM</span><input id="tempoControl" type="range" min="60" max="150" value="96"></label></div>
+        <p class="fine-print">A local rule-based generator creates a random monophonic melody. No generative AI model is connected.</p>
+      </div>
+      <div id="loadedFile" class="loaded-file hidden"><span class="file-glyph">♫</span><div><strong id="fileName">—</strong><span id="fileInfo">—</span></div><button class="button button-light" id="replaceFileBtn" type="button">Replace file</button></div>
     </section>
-
-    <section id="localPanel" class="panel hidden">
-      <h2>Local Fragment Feedback</h2>
-      <p>
-        Green notes match the original.
-        Orange notes have different pitches.
-      </p>
-    </section>
-
-    <section class="panel">
-      <h2>Original Melody</h2>
-      <div id="originalNotes" class="notes"></div>
-    </section>
-
-    <section class="panel">
-      <h2>Suggested / Revised Melody</h2>
-      <div id="revisedNotes" class="notes"></div>
-      <p class="hint">
-        Use the + and − buttons to change
-        individual note pitches.
-      </p>
-    </section>
-
-    <section class="toolbar">
-      <button id="acceptBtn" class="accept">
-        Accept Revision
-      </button>
-      <button id="rejectBtn" class="reject">
-        Reject Revision
-      </button>
-    </section>
-
-    <p id="status" role="status">
-      Example melody loaded. Try changing a note!
-    </p>
-
-    <footer>
-      Prototype using simulated AI suggestions.
-      No generative AI model is connected.
-    </footer>
+    <div class="workspace-grid">
+      <section class="main-column">
+        <section class="card track-card">
+          <div class="track-header"><div><p class="eyebrow">MELODY TRACK</p><h2 id="trackTitle">Editable melody line</h2></div><div class="track-status"><span class="status-dot" id="sourceDot"></span><span id="sourceStatus">Waiting for audio</span></div></div>
+          <div class="track-legend"><span class="note-legend"><i class="legend-original"></i>Same as original</span><span class="note-legend"><i class="legend-edited"></i>Changed or added</span><span class="drag-hint" id="lineHelp">Move blocks up or down to change pitch, or left and right to change time.</span></div>
+          <div class="view-options hidden" id="viewOptions"><span class="slice-view-label">Editable slices</span><span class="slice-info" id="sliceInfo"></span></div>
+          <div class="roll-wrap" id="rollWrap"><canvas id="trackCanvas" aria-label="Editable pitch and timing blocks. Select a block to use the pitch and duration controls."></canvas><div class="empty-state" id="emptyState"><span>♫</span><strong>Import audio or generate a scene melody</strong><small>The blocks and the audio use the same editable data.</small></div></div>
+          <div class="track-navigation hidden" id="trackNavigation" aria-label="Timeline view navigation"><button class="button button-light" type="button" id="panLeftBtn" aria-label="Move timeline view left" disabled>◀</button><label for="trackPan">View</label><input id="trackPan" type="range" min="0" max="1000" step="1" value="0" disabled aria-label="Move the visible timeline left or right"><button class="button button-light" type="button" id="panRightBtn" aria-label="Move timeline view right" disabled>▶</button><span id="viewRange" class="view-range">00:00 – 00:00</span></div>
+          <div class="timeline-row"><span id="trackStart">00:00</span><input id="seekControl" type="range" min="0" max="1000" value="0" disabled aria-label="Playback position"><span id="trackEnd">00:00</span></div>
+          <audio id="audioPlayer" controls preload="metadata" class="audio-player" aria-label="Play, pause and seek audio"></audio>
+          <div class="track-actions">
+            <div class="button-row"><button class="button button-light" id="playOriginalBtn" type="button" disabled>▶ Original</button><button class="button button-dark" id="playEditedBtn" type="button" disabled>▶ Edited</button></div>
+            <div class="button-row"><button class="button button-light" id="undoBtn" type="button" disabled>↶ Undo</button><button class="button button-light" id="redoBtn" type="button" disabled>↷ Redo</button><button class="button button-light" id="resetBtn" type="button" disabled>Reset</button><button class="button button-primary" id="downloadBtn" type="button" disabled>↓ Export WAV</button></div>
+          </div>
+          <p class="source-caveat" id="sourceCaveat">Generated blocks represent notes. Imported blocks represent real audio slices, with relative pitch shifts rather than detected musical pitches.</p>
+        </section>
+        <section class="card edit-card" id="editCard">
+          <div class="section-heading"><div><p class="eyebrow">EDIT SELECTED NOTE</p><h2 id="editTitle">Note editing</h2></div><span id="selectedNoteLabel" class="selection-chip">No note selected</span></div>
+          <div class="note-controls" id="noteControls"><label><span id="pitchControlLabel">Pitch</span> <select id="notePitch" disabled></select></label><label>Length <select id="noteLength" disabled><option value="0.5">½ beat</option><option value="1">1 beat</option><option value="1.5">1.5 beats</option><option value="2">2 beats</option></select></label><button class="button button-light" id="duplicateNoteBtn" type="button" disabled>Duplicate</button><button class="button button-light button-red" id="deleteNoteBtn" type="button" disabled>Delete</button><button class="button button-light" id="addNoteBtn" type="button" disabled>＋ Add</button></div>
+          <div class="upload-tools hidden" id="uploadTools"><label>Volume <input id="volumeControl" type="range" min="0" max="150" value="100"><span id="volumeValue">100%</span></label><label>Speed <input id="speedControl" type="range" min="0.5" max="1.5" step="0.05" value="1"><span id="speedValue">1.00×</span></label><button class="button button-light" id="fadeInBtn" type="button">Fade in · 2s</button><button class="button button-light" id="fadeOutBtn" type="button">Fade out · 2s</button><div class="selection-actions"><span id="selectionLabel">Shift + drag on the track to select a time range</span><button class="button button-light" id="keepSelectionBtn" type="button" disabled>Keep range</button><button class="button button-light button-red" id="deleteSelectionBtn" type="button" disabled>Remove range</button></div></div>
+        </section>
+        <section class="card edit-card suggestion-card" id="suggestionCard">
+          <div class="section-heading"><div><p class="eyebrow">SUGGESTION</p><h2>Try a different direction</h2></div><span class="selection-chip">Simulated AI · rules only</span></div>
+          <div class="suggestion-row"><div><strong>Direction</strong><select id="suggestionDirection"><option value="smoother">Smoother</option><option value="simpler">Simpler</option><option value="varied">More varied</option><option value="higher">Higher</option></select></div><button class="button button-light" id="suggestBtn" type="button" disabled>✦ Generate suggestion</button><span id="suggestionInfo">Listen, continue editing, then accept or reject the revision.</span><div class="suggestion-actions"><button class="button button-primary" id="acceptBtn" type="button" disabled>Accept revision</button><button class="button button-light" id="rejectBtn" type="button" disabled>Reject revision</button></div></div>
+        </section>
+      </section>
+      <aside class="feedback-column">
+        <section class="card feedback-card"><p class="eyebrow">GLOBAL SIMILARITY</p><h2 id="similarityTitle">Overall similarity</h2><div class="score-row"><strong id="similarityScore">—</strong><span id="similarityCount">Waiting for a reference</span></div><div class="meter"><div id="scoreBar"></div></div><p id="similarityMethod" class="feedback-copy">Load a source to compare its original items with your revision.</p></section>
+        <section class="card feedback-card local-card"><p class="eyebrow">LOCAL FEEDBACK</p><h2>Selected item &amp; edit history</h2><div class="local-note-box" id="localFeedback"><span class="local-icon">⌖</span><p>Select a block to see its pitch, timing and length changes.</p></div><div class="feedback-key"><span><i class="same-key"></i>Same</span><span><i class="changed-key"></i>Changed</span></div><div class="history-heading"><strong>Edit history</strong><span id="changeCount">0 changes</span></div><p id="historyEmpty" class="feedback-copy">Each committed edit will be recorded here.</p><ol id="changeHistory" class="change-history" aria-label="Complete chronological edit history"></ol></section>
+        <section class="card feedback-card explanation-card"><p class="eyebrow">HOW IT WORKS</p><h2>Feedback explanation</h2><p id="feedbackExplanation">Load a source to see its comparison method and current differences.</p><p id="feedbackLatest">No edits yet.</p></section>
+      </aside>
+    </div>
+    <div id="status" class="toast" role="status" aria-live="polite">Import local audio or create a scene melody to begin.</div>
+    <footer><span>MelodyCompare · A2 interactive system prototype</span><span>Rule-based generation · local audio processing</span></footer>
   </main>
-
+  <script src="audio-engine.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
