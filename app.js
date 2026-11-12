@@ -1,54 +1,45 @@
 "use strict";
-
 const $ = id => document.getElementById(id);
-const Engine = window.MelodyAudio;
-const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-const NOTE_NAMES = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
-const DEFAULT_SETTINGS = { tempo: 96, speed: 1, volume: 100, fadeIn: false, fadeOut: false };
-let audioContext = null, sourceMode = "upload", sessionName = "", sampleSource = null;
-let originalBuffer = null, editedBuffer = null, originalUrl = null, editedUrl = null;
-let originalNotes = [], editedNotes = [], originalSettings = { ...DEFAULT_SETTINGS }, settings = { ...DEFAULT_SETTINGS };
-let acceptedRevision = null, initialRevision = null, selectedNoteId = null, activeSelection = null;
-let undoStack = [], redoStack = [], nextNoteId = 1, dragState = null, trackOffsetBeats = 0, autoFollowTrack = true;
-let renderVersion = 0, loadingVersion = 0, rendering = false, playbackProgress = 0, playbackVersion = "edited";
-let latestAction = "No edits yet.", statusTimer = null;
-const changeLog = [];
-
-function context() {
-  if (!AudioContextClass) throw new Error("Web Audio is unavailable. Please use a current version of Chrome or Edge.");
-  if (!audioContext) audioContext = new AudioContextClass();
-  return audioContext;
-}
+const Engine = window.MelodyAudio, Versions = window.MelodyVersions;
 const clamp = Engine.clamp;
-const copyNotes = notes => notes.map(note => ({ ...note }));
-const copyRevision = revision => revision ? { notes: copyNotes(revision.notes), settings: { ...revision.settings } } : null;
-const currentRevision = () => ({ notes: copyNotes(editedNotes), settings: { ...settings } });
-const snapshot = () => ({ ...currentRevision(), accepted: copyRevision(acceptedRevision) });
-const hasSession = () => initialRevision !== null;
-const itemName = () => sourceMode === "upload" ? "Slice" : "Note";
-function timeLabel(seconds) {
-  const s = Math.max(0, Math.floor(seconds || 0));
-  return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+let audioContext = null, history = null, source = null, originalBuffer = null, workingBuffer = null;
+let sessionName = "", sessionEpoch = 0, loadingToken = 0, renderToken = 0, rendering = false, workingRender = null, renderedSignature = "";
+let selectedVersionId = "original", selectedPointId = null;
+let activeSelection = null, viewOffset = 0, autoFollow = true, dragState = null, draftPreview = null;
+let playbackToken = 0, playbackOffset = 0, playbackProgress = 0, playingId = null, preparedId = null, activeAudioUrl = null, originalFileUrl = null, sequentialNext = null;
+const audioCache = new Map(), pendingRenders = new Map(), scoreCache = new Map(), wavBlobCache = new Map();
+let currentComparison = null, draftScoreState = null, draftScoreResult = null, draftEntityCache = null;
+let partialScoreKey = "", partialScoreResults = new Map();
+function context() {
+  if (!AudioContextClass) throw new Error("Web Audio is unavailable. Use a current Chrome or Edge browser.");
+  if (!audioContext) audioContext = new AudioContextClass(); return audioContext;
 }
-const preciseTime = value => Number(value).toFixed(2) + "s";
-function pitchLabel(pitch) {
-  if (sourceMode === "upload") return (pitch - 60 > 0 ? "+" : "") + (pitch - 60) + " st";
-  return NOTE_NAMES[((pitch % 12) + 12) % 12] + (Math.floor(pitch / 12) - 1);
+function tell(message) { $("status").textContent = message; }
+function timeLabel(seconds) { const t = Math.max(0, seconds || 0); return String(Math.floor(t / 60)).padStart(2, "0") + ":" + String(Math.floor(t % 60)).padStart(2, "0"); }
+const precise = value => Number(value).toFixed(2) + "s";
+const pitchText = value => (value > 0 ? "+" : "") + Number(value.toFixed(2)) + (Math.abs(value) === 1 ? " semitone" : " semitones");
+const workingState = () => draftPreview || history?.working;
+const signature = state => JSON.stringify(state);
+function entity(id) {
+  if (!history) return null;
+  if (id !== "draft") return history.get(id);
+  const state = workingState();
+  if (draftEntityCache?.history === history && draftEntityCache.state === state && draftEntityCache.parentId === history.baseId && draftEntityCache.number === history.nextVersion) return draftEntityCache.item;
+  const item = { id: "draft", name: "Version " + history.nextVersion + " (unsaved)", color: Versions.color(history.nextVersion), state,
+    reason: "Unsaved edits based on " + history.get(history.baseId).name, parentId: history.baseId,
+    changes: Versions.changes(history.get(history.baseId).state, state), createdAt: null };
+  draftEntityCache = { history, state, parentId: history.baseId, number: history.nextVersion, item };
+  return item;
 }
-function tell(message) {
-  $("status").textContent = message;
-  clearTimeout(statusTimer);
-  statusTimer = setTimeout(() => { $("status").textContent = hasSession() ? "Your original is preserved. Edit, compare, and export when ready." : "Import local audio or create a scene melody to begin."; }, 6500);
-}
-function stateEqual(a, b) {
-  if (!a || !b || a.notes.length !== b.notes.length || JSON.stringify(a.settings) !== JSON.stringify(b.settings)) return false;
-  const map = new Map(b.notes.map(note => [note.id, note]));
-  return a.notes.every(note => JSON.stringify(note) === JSON.stringify(map.get(note.id)));
-}
+function showDraft() { return Boolean(history && (selectedVersionId === "draft" || history.dirty())); }
+function entities() { return history ? showDraft() ? [...history.versions, entity("draft")] : history.versions : []; }
+function curveEntities() { return history ? showDraft() ? [...history.versions, { id: "draft", color: Versions.color(history.nextVersion), state: workingState() }] : history.versions : []; }
+function editable() { return Boolean(history && selectedVersionId === "draft"); }
+function colorButton(button, color) { button.style.backgroundColor = color; button.style.borderColor = color; button.style.color = "#fff"; }
 function bufferFromRendered(rendered) {
   const buffer = context().createBuffer(rendered.channels.length, rendered.channels[0].length, rendered.sampleRate);
-  rendered.channels.forEach((data, channel) => buffer.copyToChannel(data, channel));
-  return buffer;
+  rendered.channels.forEach((data, c) => buffer.copyToChannel(data, c)); return buffer;
 }
 function encodeWav(buffer) {
   const channels = buffer.numberOfChannels, block = channels * 2, bytes = buffer.length * block;
@@ -66,225 +57,102 @@ function encodeWav(buffer) {
   }
   return new Blob([output], { type: "audio/wav" });
 }
-function replaceEditedBuffer(buffer) {
-  editedBuffer = buffer;
-  if (editedUrl) URL.revokeObjectURL(editedUrl);
-  editedUrl = URL.createObjectURL(encodeWav(buffer));
-  $("audioPlayer").src = editedUrl; $("audioPlayer").load();
-  playbackProgress = 0; playbackVersion = "edited";
-  $("seekControl").value = 0; $("trackStart").textContent = "00:00";
-  $("trackEnd").textContent = timeLabel(buffer.duration);
-}
-function selectSourceTab(mode) {
-  const generating = mode === "generate";
-  $("uploadTab").classList.toggle("active", !generating); $("generateTab").classList.toggle("active", generating);
-  $("uploadTab").setAttribute("aria-selected", String(!generating)); $("generateTab").setAttribute("aria-selected", String(generating));
-  $("uploadSource").classList.toggle("hidden", generating); $("generateSource").classList.toggle("hidden", !generating);
-}
-$("uploadTab").addEventListener("click", () => selectSourceTab("upload"));
-$("generateTab").addEventListener("click", () => selectSourceTab("generate"));
 
-function appendLog(action, detail) {
-  const entry = { number: changeLog.length + 1, action, detail, source: sessionName || "Workspace",
-    time: new Date().toLocaleTimeString("en-GB", { timeZone: "Europe/London", hour12: false }) };
-  changeLog.push(entry);
-  const li = document.createElement("li"), title = document.createElement("strong"), meta = document.createElement("small"), body = document.createElement("p");
-  title.textContent = entry.action; meta.textContent = "#" + entry.number + " · " + entry.time + " · " + entry.source; body.textContent = entry.detail;
-  li.append(title, meta, body); $("changeHistory").append(li);
-  $("historyEmpty").classList.add("hidden"); $("changeCount").textContent = changeLog.length + " records";
-  latestAction = action + ": " + detail;
+function cacheAudio(id, buffer) {
+  if (id === "original" || id === "draft") return;
+  audioCache.delete(id); audioCache.set(id, buffer);
+  while (audioCache.size > 3) audioCache.delete(audioCache.keys().next().value);
 }
-function recordDifferences(action, before, after) {
-  const beforeMap = new Map(before.notes.map(note => [note.id, note])), afterMap = new Map(after.notes.map(note => [note.id, note]));
-  let count = 0;
-  for (const [id, note] of beforeMap) {
-    const next = afterMap.get(id);
-    if (!next) { appendLog(action + " · " + itemName() + " " + id, "Deleted " + pitchLabel(note.pitch) + " at " + preciseTime(Engine.startSeconds(note, before.settings)) + "."); count++; continue; }
-    const differences = [];
-    if (note.pitch !== next.pitch) differences.push("pitch " + pitchLabel(note.pitch) + " → " + pitchLabel(next.pitch));
-    const oldStart = Engine.startSeconds(note, before.settings), newStart = Engine.startSeconds(next, after.settings);
-    const oldLength = Engine.lengthSeconds(note, before.settings), newLength = Engine.lengthSeconds(next, after.settings);
-    if (Math.abs(oldStart - newStart) > 0.002) differences.push("start " + preciseTime(oldStart) + " → " + preciseTime(newStart));
-    if (Math.abs(oldLength - newLength) > 0.002) differences.push("length " + preciseTime(oldLength) + " → " + preciseTime(newLength));
-    if (note.sampleStart !== next.sampleStart || note.sampleEnd !== next.sampleEnd) differences.push("sample boundaries trimmed");
-    if (differences.length) { appendLog(action + " · " + itemName() + " " + id, differences.join("; ") + "."); count++; }
+function stopPlayback() {
+  ++playbackToken; sequentialNext = null; $("audioPlayer").pause();
+  $("audioPlayer").removeAttribute("src"); $("audioPlayer").load();
+  if (activeAudioUrl) URL.revokeObjectURL(activeAudioUrl);
+  activeAudioUrl = null; playingId = null; preparedId = null;
+  $("playbackLabel").textContent = "Playback stopped"; return playbackToken;
+}
+function wavBlob(id, buffer) {
+  if (id !== "draft" && wavBlobCache.has(id)) {
+    const cached = wavBlobCache.get(id); wavBlobCache.delete(id); wavBlobCache.set(id,cached); return cached;
   }
-  for (const [id, note] of afterMap) if (!beforeMap.has(id)) {
-    appendLog(action + " · " + itemName() + " " + id, "Added " + pitchLabel(note.pitch) + " at " + preciseTime(Engine.startSeconds(note, after.settings)) + ", length " + preciseTime(Engine.lengthSeconds(note, after.settings)) + "."); count++;
+  const blob = encodeWav(buffer);
+  if (id !== "draft" && blob.size <= 24 * 1024 * 1024) {
+    wavBlobCache.set(id,blob);
+    while (wavBlobCache.size > 2) wavBlobCache.delete(wavBlobCache.keys().next().value);
   }
-  for (const key of ["volume", "speed", "fadeIn", "fadeOut", "tempo"]) if (before.settings[key] !== after.settings[key]) {
-    const labels = { volume: "Volume (%)", speed: "Speed", fadeIn: "Fade in", fadeOut: "Fade out", tempo: "Tempo (BPM)" };
-    appendLog(action, labels[key] + ": " + before.settings[key] + " → " + after.settings[key] + "."); count++;
-  }
-  if (!count) appendLog(action, "Revision decision recorded; no note or slice values changed.");
+  return blob;
 }
-function pushUndo(before) {
-  undoStack.push(before); if (undoStack.length > 40) undoStack.shift(); redoStack = [];
+function prepareBuffer(buffer, id, range = null) {
+  if (activeAudioUrl) URL.revokeObjectURL(activeAudioUrl);
+  const originalState = history?.get("original")?.state;
+  const rawOriginal = !range && originalFileUrl && originalState && Versions.equal(entity(id)?.state,originalState);
+  activeAudioUrl = rawOriginal ? null : URL.createObjectURL(range ? encodeWav(bufferFromRendered(Versions.segment(buffer,range))) : wavBlob(id,buffer));
+  preparedId = id; playbackOffset = range?.start || 0; playbackProgress = playbackOffset;
+  $("audioPlayer").src = rawOriginal ? originalFileUrl : activeAudioUrl; $("audioPlayer").load();
+  $("trackStart").textContent = timeLabel(playbackOffset); $("trackEnd").textContent = timeLabel(range?.end || buffer.duration);
 }
-async function commitEdit(before, action) {
-  if (stateEqual(before, currentRevision())) { updateUI(); return; }
-  pushUndo(before); recordDifferences(action, before, currentRevision());
-  activeSelection = null; updateUI();
-  await renderCurrent();
-}
-async function renderCurrent() {
-  if (!hasSession()) return false;
-  const version = ++renderVersion, notes = copyNotes(editedNotes), controls = { ...settings };
-  rendering = true; $("sourceStatus").textContent = "Rendering edited audio…"; updateUI();
-  try {
-    const rendered = await Engine.render(notes, sampleSource, controls, { cancelled: () => version !== renderVersion });
-    if (version !== renderVersion) return false;
-    replaceEditedBuffer(bufferFromRendered(rendered));
-    rendering = false; updateUI(); return true;
-  } catch (error) {
-    if (version !== renderVersion || error.name === "AbortError") return false;
-    rendering = false; editedBuffer = null;
-    appendLog("Rendering failed", error.message); tell(error.message + " Use Undo or shorten the arrangement."); updateUI(); return false;
-  }
-}
-async function restoreState(saved, action) {
-  const before = snapshot();
-  editedNotes = copyNotes(saved.notes); settings = { ...saved.settings }; acceptedRevision = copyRevision(saved.accepted);
-  selectedNoteId = null; activeSelection = null;
-  recordDifferences(action, before, currentRevision()); updateUI(); await renderCurrent();
-}
-$("undoBtn").addEventListener("click", async () => {
-  if (!undoStack.length) return;
-  redoStack.push(snapshot()); await restoreState(undoStack.pop(), "Undo"); tell("The last change was undone. Its history remains recorded.");
-});
-$("redoBtn").addEventListener("click", async () => {
-  if (!redoStack.length) return;
-  undoStack.push(snapshot()); await restoreState(redoStack.pop(), "Redo"); tell("The change was restored.");
-});
-$("resetBtn").addEventListener("click", async () => {
-  if (!hasSession()) return;
-  const before = snapshot(); editedNotes = copyNotes(initialRevision.notes); settings = { ...initialRevision.settings }; selectedNoteId = null;
-  await commitEdit(before, "Reset to original"); tell("The edited version now matches the untouched original.");
-});
-
-function comparison() { return Engine.compare(originalNotes, editedNotes, originalSettings, settings); }
-function renderFeedback() {
-  if (!hasSession()) return;
-  const result = comparison(), imported = sourceMode === "upload";
-  $("similarityTitle").textContent = imported ? "Audio slice edit match" : "Overall melody similarity";
-  $("similarityScore").textContent = result.score + "%";
-  $("similarityCount").textContent = result.matches + " / " + result.total + " items unchanged";
-  $("scoreBar").style.width = result.score + "%";
-  $("similarityMethod").textContent = imported
-    ? "Relative transposition, timing, length and sample boundaries are compared. This is an edit correspondence score, not detected melodic or perceptual similarity."
-    : "Matching pitch, start time and length count as unchanged. The score is a simplified symbolic comparison, not a listening-test result.";
-  const effects = [];
-  if (settings.volume !== 100) effects.push("volume " + settings.volume + "%");
-  if (settings.fadeIn) effects.push("2s fade in");
-  if (settings.fadeOut) effects.push("2s fade out");
-  if (settings.speed !== 1) effects.push("speed " + settings.speed.toFixed(2) + "×");
-  $("feedbackExplanation").textContent = (imported
-    ? "Imported audio uses real sample slices. All initial pitch labels are 0 st (no transposition); no absolute melody pitches have been detected. "
-    : "Generated notes are compared with the original generated melody. ") +
-    result.matches + " unchanged, " + result.changed + " changed, " + result.added + " added, " + result.removed + " deleted. " +
-    "Score = unchanged items ÷ (original items + added items), rounded to a percentage. " +
-    "Grey means unchanged; orange means changed or added." +
-    (effects.length ? " Active audio effects: " + effects.join(", ") + ". Loudness and fades are not part of this score." : "");
-  $("feedbackLatest").textContent = "Latest action — " + latestAction;
-  const note = editedNotes.find(item => item.id === selectedNoteId), baseline = originalNotes.find(item => item.id === selectedNoteId);
-  if (!note) {
-    $("localFeedback").replaceChildren();
-    const p = document.createElement("p"); p.textContent = result.changed + result.added + result.removed
-      ? "Select a block for its current differences. The chronological history below preserves every committed edit."
-      : "All current items match the original. Select a block for details.";
-    $("localFeedback").append(p); return;
-  }
-  const same = Engine.sameItem(baseline, note, originalSettings, settings);
-  const p = document.createElement("p");
-  p.textContent = itemName() + " " + note.id + ": " + pitchLabel(note.pitch) + ", start " + preciseTime(Engine.startSeconds(note, settings)) + ", length " + preciseTime(Engine.lengthSeconds(note, settings)) + ". " +
-    (!baseline ? "Added item; it has no original counterpart." : same ? "Same as original." :
-      "Original: " + pitchLabel(baseline.pitch) + ", start " + preciseTime(Engine.startSeconds(baseline, originalSettings)) + ", length " + preciseTime(Engine.lengthSeconds(baseline, originalSettings)) + ".");
-  $("localFeedback").replaceChildren(p);
-}
-function configurePitchControl() {
-  $("notePitch").replaceChildren();
-  const low = sourceMode === "upload" ? 48 : 55, high = sourceMode === "upload" ? 72 : 79;
-  for (let pitch = high; pitch >= low; pitch--) {
-    const option = document.createElement("option"); option.value = pitch; option.textContent = pitchLabel(pitch); $("notePitch").append(option);
-  }
-}
-function updateUI() {
-  const loaded = hasSession(), imported = sourceMode === "upload", selected = editedNotes.find(note => note.id === selectedNoteId);
-  document.querySelectorAll(".note-legend").forEach(node => node.classList.toggle("hidden", !loaded));
-  $("emptyState").classList.toggle("hidden", loaded);
-  $("noteControls").classList.toggle("hidden", !loaded);
-  $("uploadTools").classList.toggle("hidden", !loaded || !imported);
-  $("viewOptions").classList.toggle("hidden", !loaded || !imported);
-  if (loaded && imported) $("sliceInfo").textContent = editedNotes.length + " slices · original slices " + (originalBuffer.duration / originalNotes.length).toFixed(2) + "s each · use the view slider below";
-  $("selectedNoteLabel").textContent = selected ? itemName() + " " + selected.id + " · " + pitchLabel(selected.pitch) : "No " + (imported ? "slice" : "note") + " selected";
-  $("editTitle").textContent = imported && loaded ? "Audio slice editing" : "Note editing";
-  $("pitchControlLabel").textContent = imported ? "Transpose" : "Pitch";
-  $("notePitch").disabled = !selected; $("noteLength").disabled = !selected;
-  $("duplicateNoteBtn").disabled = !selected; $("deleteNoteBtn").disabled = !selected; $("addNoteBtn").disabled = !loaded;
-  $("suggestBtn").disabled = !loaded || !editedNotes.length;
-  $("acceptBtn").disabled = !loaded || stateEqual(currentRevision(), acceptedRevision);
-  $("rejectBtn").disabled = !loaded || stateEqual(currentRevision(), acceptedRevision);
-  $("undoBtn").disabled = !undoStack.length; $("redoBtn").disabled = !redoStack.length;
-  $("resetBtn").disabled = !loaded || stateEqual(currentRevision(), initialRevision);
-  $("playOriginalBtn").disabled = !originalUrl; $("playEditedBtn").disabled = rendering || !editedBuffer;
-  $("downloadBtn").disabled = rendering || !editedBuffer; $("seekControl").disabled = !originalUrl;
-  $("volumeControl").value = settings.volume; $("volumeValue").textContent = settings.volume + "%";
-  $("speedControl").value = settings.speed; $("speedValue").textContent = settings.speed.toFixed(2) + "×";
-  $("fadeInBtn").setAttribute("aria-pressed", String(settings.fadeIn)); $("fadeOutBtn").setAttribute("aria-pressed", String(settings.fadeOut));
-  const validRange = activeSelection && activeSelection.end - activeSelection.start > 0.02;
-  $("keepSelectionBtn").disabled = !validRange; $("deleteSelectionBtn").disabled = !validRange;
-  $("selectionLabel").textContent = validRange ? preciseTime(activeSelection.start) + " – " + preciseTime(activeSelection.end) : "Shift + drag on the track to select a time range";
-  if (selected) {
-    $("notePitch").value = selected.pitch;
-    $("noteLength").querySelectorAll("[data-current]").forEach(node => node.remove());
-    if (![...$("noteLength").options].some(option => Number(option.value) === selected.length)) {
-      const option = document.createElement("option"); option.value = selected.length; option.textContent = selected.length.toFixed(2) + " beats (current)"; option.dataset.current = "true"; $("noteLength").append(option);
+async function renderWorking(invalidatePlayback = true) {
+  if (!history) return false;
+  const token = ++renderToken, epoch = sessionEpoch, state = Versions.clone(history.working), activeSource = source;
+  if (invalidatePlayback) stopPlayback();
+  workingBuffer = null; renderedSignature = ""; rendering = true; $("sourceStatus").textContent = "Rendering edited audio…"; renderUI();
+  const promise = (async () => {
+    try {
+      const result = await Engine.renderCurve(activeSource, state, { cancelled: () => token !== renderToken || epoch !== sessionEpoch,
+        progress: value => { if (token === renderToken) $("sourceStatus").textContent = "Rendering edited audio · " + Math.round(value * 100) + "%"; } });
+      if (token !== renderToken || epoch !== sessionEpoch) return false;
+      workingBuffer = bufferFromRendered(result); renderedSignature = signature(state); rendering = false;
+      renderUI(); return true;
+    } catch (error) {
+      if (token !== renderToken || epoch !== sessionEpoch || error.name === "AbortError") return false;
+      rendering = false; workingBuffer = null; tell("Audio rendering failed: " + error.message + " Use Undo or try Play again."); renderUI(); return false;
     }
-    $("noteLength").value = selected.length;
-  }
-  if (loaded && !rendering) $("sourceStatus").textContent = imported ? "Imported audio · editable slices" : "Generated melody · editable notes";
-  resizeTrackCanvas(); renderFeedback(); drawTrack();
+  })();
+  workingRender = promise; return promise;
 }
-
-async function startSession(mode, name, notes, buffer, source, controls) {
-  ++renderVersion;
-  $("audioPlayer").pause();
-  sourceMode = mode; sessionName = name; sampleSource = source;
-  settings = { ...controls }; originalSettings = { ...controls };
-  originalNotes = copyNotes(notes); editedNotes = copyNotes(notes);
-  initialRevision = currentRevision(); acceptedRevision = copyRevision(initialRevision);
-  originalBuffer = buffer; selectedNoteId = null; activeSelection = null; undoStack = []; redoStack = []; trackOffsetBeats = 0; autoFollowTrack = true;
-  if (originalUrl) URL.revokeObjectURL(originalUrl);
-  originalUrl = URL.createObjectURL(encodeWav(originalBuffer)); replaceEditedBuffer(originalBuffer);
-  rendering = false; configurePitchControl();
-  $("trackTitle").textContent = mode === "upload" ? "Editable audio slices" : "Editable melody line";
-  $("lineHelp").textContent = mode === "upload" ? "Drag slices to change pitch/time. Shift + drag selects a time range. Use the view slider below for later slices." : "Move blocks vertically for pitch and horizontally for time. Select one for length, duplicate or delete.";
-  $("sourceCaveat").textContent = mode === "upload"
-    ? "Each block is a real audio slice. Vertical position is relative transposition (0 st = unchanged), not a detected melody pitch. Pitch and length edits use a basic granular sampler and may introduce audible artifacts. Shift + drag on the slice track retains range editing."
-    : "These blocks drive the same rule-generated melody you hear. Every committed change rebuilds the edited audio. No generative AI model is connected.";
-  appendLog("Source loaded", mode === "upload" ? "Imported " + notes.length + " equal-time audio slices. All begin at 0 st; no pitch transcription is claimed." : "Generated " + notes.length + " notes. The original audio is preserved for comparison.");
-  updateUI();
+async function getBuffer(id) {
+  if (!history) throw new Error("Import audio first.");
+  if (id === "original") return originalBuffer;
+  if (id === "draft") {
+    if (rendering && workingRender) await workingRender;
+    if (!workingBuffer || renderedSignature !== signature(history.working)) await renderWorking(false);
+    if (!workingBuffer) throw new Error("Edited audio is not available."); return workingBuffer;
+  }
+  if (audioCache.has(id)) { const audio = audioCache.get(id); cacheAudio(id, audio); return audio; }
+  if (pendingRenders.has(id)) return pendingRenders.get(id);
+  const version = history.get(id); if (!version) throw new Error("Saved version not found.");
+  const epoch = sessionEpoch, activeSource = source;
+  const promise = Engine.renderCurve(activeSource, version.state, { cancelled: () => epoch !== sessionEpoch }).then(result => {
+    if (epoch !== sessionEpoch) throw new Error("The audio source changed.");
+    const buffer = bufferFromRendered(result); cacheAudio(id, buffer); return buffer;
+  });
+  pendingRenders.set(id, promise);
+  try { return await promise; } finally { if (pendingRenders.get(id) === promise) pendingRenders.delete(id); }
 }
 async function loadFile(file) {
   if (!file) return;
-  if (file.size > 50 * 1024 * 1024) return tell("This file exceeds 50 MB. Choose a smaller audio file.");
-  const token = ++loadingVersion; $("generateBtn").disabled = true;
-  tell("Reading " + file.name + " locally…");
+  if (file.size > 50 * 1024 * 1024) return tell("This file exceeds 50 MB. Choose a smaller recording.");
+  const token = ++loadingToken; tell("Reading " + file.name + " locally…");
   try {
     const ctx = context(); await ctx.resume();
     const decoded = await ctx.decodeAudioData((await file.arrayBuffer()).slice(0));
-    if (token !== loadingVersion) return;
-    if (decoded.duration > 300) return tell("This recording is longer than 5 minutes. Please choose a shorter file.");
-    if (!decoded.length) throw new Error("No audio samples were found.");
-    const controls = { ...DEFAULT_SETTINGS };
-    const notes = Engine.splitSource(decoded.duration, controls.tempo, () => nextNoteId++);
-    const source = { sampleRate: decoded.sampleRate, channels: Array.from({ length: decoded.numberOfChannels }, (_, c) => decoded.getChannelData(c)) };
-    await startSession("upload", file.name, notes, decoded, source, controls);
-    $("loadedFile").classList.remove("hidden"); $("dropZone").classList.add("hidden");
-    $("fileName").textContent = file.name; $("fileInfo").textContent = timeLabel(decoded.duration) + " · " + decoded.numberOfChannels + " channels · " + (decoded.sampleRate / 1000).toFixed(1) + " kHz";
-    selectSourceTab("upload"); tell("Audio imported. You can now transpose, move, resize, copy, delete and suggest edits to its real audio slices.");
-  } catch (error) { tell("Could not read this file. Try a valid WAV or MP3. " + error.message); }
-  finally { if (token === loadingVersion) $("generateBtn").disabled = false; }
+    if (token !== loadingToken) return false;
+    if (!decoded.length || decoded.duration <= 0) throw new Error("No audio samples were found.");
+    if (decoded.duration > 300) return tell("This recording is longer than 5 minutes. Choose a shorter file.");
+    let nextFileUrl = null;
+    if (typeof Blob !== "undefined" && file instanceof Blob) { try { nextFileUrl = URL.createObjectURL(file); } catch { /* Decoded PCM playback remains available. */ } }
+    stopPlayback(); if (originalFileUrl) URL.revokeObjectURL(originalFileUrl);
+    originalFileUrl = nextFileUrl; ++sessionEpoch; ++renderToken;
+    sessionName = file.name; originalBuffer = decoded;
+    source = { sampleRate: decoded.sampleRate, channels: Array.from({ length: decoded.numberOfChannels }, (_, c) => decoded.getChannelData(c)) };
+    history = new Versions.VersionHistory(decoded.duration, sessionEpoch + ":" + file.name);
+    selectedVersionId = "original"; selectedPointId = null;
+    activeSelection = null; draftPreview = null; dragState = null; viewOffset = 0; autoFollow = true; rendering = false;
+    audioCache.clear(); pendingRenders.clear(); scoreCache.clear(); wavBlobCache.clear(); draftScoreState = null; draftScoreResult = null; draftEntityCache = null;
+    workingBuffer = decoded; renderedSignature = signature(history.working); currentComparison = null;
+    $("dropZone").classList.add("hidden"); $("loadedFile").classList.remove("hidden"); $("replaceFileBtn").classList.remove("hidden");
+    $("fileName").textContent = file.name; $("fileInfo").textContent = precise(decoded.duration) + " · " + decoded.numberOfChannels + " channels · " + (decoded.sampleRate / 1000).toFixed(1) + " kHz";
+    if (originalFileUrl) prepareBuffer(decoded, "original"); else { $("trackStart").textContent = "00:00"; $("trackEnd").textContent = timeLabel(decoded.duration); } renderUI(); tell("Audio imported. Drag a curve point or select a segment, then add a version. Original stays unchanged."); return true;
+  } catch (error) { if (token === loadingToken) tell("Could not read this audio. Try a valid WAV or MP3. " + error.message); return false; }
 }
 $("audioFile").addEventListener("change", event => { loadFile(event.target.files?.[0]); event.target.value = ""; });
 $("chooseFileBtn").addEventListener("click", () => $("audioFile").click());
@@ -294,307 +162,330 @@ $("dropZone").addEventListener("keydown", event => { if (event.key === "Enter" |
 $("dropZone").addEventListener("dragover", event => { event.preventDefault(); $("dropZone").classList.add("dragging"); });
 $("dropZone").addEventListener("dragleave", () => $("dropZone").classList.remove("dragging"));
 $("dropZone").addEventListener("drop", event => { event.preventDefault(); $("dropZone").classList.remove("dragging"); loadFile(event.dataTransfer.files?.[0]); });
+function selectVersion(id) {
+  if (!entity(id)) return;
+  if (selectedVersionId !== id && preparedId) stopPlayback();
+  selectedVersionId = id; selectedPointId = null; renderUI();
+}
+function versionVisible(item) { return Boolean(item); }
+function option(select, value, label) { const node = document.createElement("option"); node.value = value; node.textContent = label; select.append(node); }
+function makeButton(text, action, className = "button") { const node = document.createElement("button"); node.type = "button"; node.className = className; node.textContent = text; node.addEventListener("click", action); return node; }
+function renderVersionPicker() {
+  const picker = $("versionPicker"); picker.replaceChildren();
+  if (!history) { picker.disabled = true; return; }
+  entities().forEach(item => option(picker, item.id, item.name)); picker.value = selectedVersionId; picker.disabled = false;
+  picker.style.borderLeft = "4px solid " + entity(selectedVersionId).color;
+  colorButton($("playSelectedBtn"), entity(selectedVersionId).color);
+}
+function renderVersionChanges() {
+  const item = entity(selectedVersionId), list = $("versionChanges"); list.replaceChildren();
+  $("versionChangesTitle").textContent = item?.id === "draft" ? "Version " + history.nextVersion + " unsaved changes" : item ? item.name + " changes" : "Changes";
+  const changes = !item ? ["Import audio to begin."] : item.changes.length ? item.changes : [item.id === "original" ? "Original imported audio; unchanged." : "No changes from the selected base."];
+  for (const text of changes) { const li = document.createElement("li"); li.textContent = text; list.append(li); }
+}
+function renderDownloads() {
+  $("downloadList").replaceChildren(); if (!history) return;
+  for (const item of entities()) {
+    const row = document.createElement("div"); row.className = "download-row"; row.style.setProperty("--version-color",item.color);
+    const name = document.createElement("span"); name.textContent = item.name;
+    const button = makeButton("↓ Download WAV", () => downloadVersion(item.id), "button download-version");
+    button.dataset.versionId = item.id; button.disabled = item.id === "draft" && (rendering || !workingBuffer); colorButton(button,item.color);
+    row.append(name,button); $("downloadList").append(row);
+  }
+}
+function renderScores() {
+  $("similarityList").replaceChildren(); if (!history) { currentComparison = null; return; }
+  const original = history.get("original").state;
+  for (const item of entities()) {
+    let comparison = item.id === "original" ? {score:100,regions:[]} : item.id === "draft" ? (draftScoreState === item.state ? draftScoreResult : null) : scoreCache.get(item.id);
+    if (!comparison) { comparison = Versions.compare(original,item.state); if (item.id === "draft") { draftScoreState = item.state; draftScoreResult = comparison; } else scoreCache.set(item.id,comparison); }
+    if (item.id === selectedVersionId) currentComparison = comparison;
+    const row = document.createElement("div"); row.className = "similarity-row" + (item.id === selectedVersionId ? " selected" : ""); row.style.setProperty("--version-color",item.color);
+    const name = document.createElement("span"); name.textContent = item.name;
+    const score = document.createElement("strong"); score.textContent = comparison.score.toFixed(1) + "%";
+    row.append(name,score); $("similarityList").append(row);
+  }
+}
+function renderPartialScores() {
+  const list = $("partialSimilarityList"); list.replaceChildren();
+  const range = segmentRange();
+  $("partialRange").textContent = range ? "Selected: " + precise(range.start) + "–" + precise(range.end) + " · edit-parameter agreement" : "To see a segment score, drag across an empty area of the curve, or hold Shift and drag across a control point.";
+  if (!history || !range) return;
+  const key = range.start.toFixed(4) + ":" + range.end.toFixed(4);
+  if (key !== partialScoreKey) { partialScoreKey = key; partialScoreResults.clear(); }
+  const original = history.get("original").state;
+  for (const item of entities()) {
+    const cached = partialScoreResults.get(item.id);
+    const result = cached?.state === item.state ? cached.result : Versions.compare(original, item.state, 0.02, range);
+    if (!cached || cached.state !== item.state) partialScoreResults.set(item.id, { state: item.state, result });
+    const row = document.createElement("div"); row.className = "similarity-row" + (item.id === selectedVersionId ? " selected" : ""); row.style.setProperty("--version-color", item.color);
+    const name = document.createElement("span"); name.textContent = item.name;
+    const score = document.createElement("strong"); score.textContent = result.score === null ? "—" : result.score.toFixed(1) + "%";
+    row.append(name, score); list.append(row);
+  }
+}
+function segmentRange() {
+  if (activeSelection && activeSelection.end - activeSelection.start >= 0.025) return {start:activeSelection.start,end:activeSelection.end};
+  return null;
+}
+function renderSegmentButtons() {
+  $("segmentPlayList").replaceChildren();
+  const range = segmentRange(); $("playAllSegmentsBtn").disabled = !history || !range || rendering;
+  if (!history || !range) return;
+  for (const item of entities()) {
+    const button = makeButton("▶ " + item.name, () => playVersion(item.id,range), "button version-play");
+    button.dataset.versionId = item.id; colorButton(button,item.color); button.disabled = item.id === "draft" && rendering;
+    $("segmentPlayList").append(button);
+  }
+}
+function renderUI() {
+  const loaded = Boolean(history), canEdit = editable() && !rendering && !draftPreview;
+  $("emptyState").classList.toggle("hidden", loaded);
+  if (!rendering) $("sourceStatus").textContent = loaded ? (history.versions.length - 1) + " saved versions · " + history.working.points.length + " control points" : "Waiting for audio";
+  $("playSelectedBtn").disabled = !loaded || selectedVersionId === "draft" && rendering;
+  $("pausePlaybackBtn").disabled = !loaded || $("audioPlayer").paused;
+  $("saveVersionBtn").disabled = !loaded || rendering || Boolean(draftPreview);
+  $("undoBtn").disabled = !loaded || !history.undoStack.length; $("redoBtn").disabled = !loaded || !history.redoStack.length;
+  $("seekControl").disabled = !loaded; $("zoomControl").disabled = !loaded;
+  const range = Boolean(segmentRange());
+  $("selectionLabel").textContent = range ? "Selected: " + precise(activeSelection.start) + "–" + precise(activeSelection.end) : "Drag an empty area or hold Shift while dragging to select a segment";
+  $("clearSelectionBtn").disabled = !activeSelection;
+  const point = loaded && entity(selectedVersionId).state.points.find(p => p.id === selectedPointId);
+  $("pitchControl").disabled = !point || !canEdit; $("resetPointBtn").disabled = !point || !canEdit;
+  $("pitchControl").value = point?.value || 0; $("pitchValue").textContent = pitchText(point?.value || 0);
+  $("selectedPointLabel").textContent = point ? precise(point.time / history.working.settings.speed) + " · " + pitchText(point.value) : loaded ? "Click or drag a curve point" : "No point selected";
+  for (const id of ["volumeControl","speedControl"]) $(id).disabled = !loaded || rendering;
+  if (loaded) {
+    const state = entity(selectedVersionId).state;
+    $("volumeControl").value = state.settings.volume; $("volumeValue").textContent = state.settings.volume + "%";
+    $("speedControl").value = state.settings.speed; $("speedValue").textContent = state.settings.speed.toFixed(2) + "×";
+  }
+  renderVersionPicker(); renderVersionChanges(); renderDownloads(); renderScores(); renderPartialScores(); renderSegmentButtons(); drawTrack();
+}
 
-function hash(input) { let state = 2166136261; for (let i = 0; i < input.length; i++) state = Math.imul(state ^ input.charCodeAt(i), 16777619); return state >>> 0; }
-function randomGenerator(seed) { let state = seed || 1; return () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 4294967296; }; }
-function inferMood(prompt) {
-  if ($("moodSelect").value !== "follow") return $("moodSelect").value;
-  if (/sad|rain|lonely|雨|忧伤|悲伤/i.test(prompt)) return "sad";
-  if (/night|dream|space|sea|夜|梦|海|星/i.test(prompt)) return "dreamy";
-  if (/run|chase|energetic|运动|活力|追|紧张/i.test(prompt)) return "energetic";
-  if (/sun|happy|morning|bright|阳光|快乐|早晨|明亮/i.test(prompt)) return "bright";
-  return "calm";
-}
-function generateNotes(prompt, mood) {
-  const random = randomGenerator(hash(prompt + mood + Date.now() + Math.random()));
-  const scale = mood === "sad" ? [0, 2, 3, 5, 7, 8, 10] : mood === "dreamy" ? [0, 2, 5, 7, 9] : [0, 2, 4, 5, 7, 9, 11];
-  const tonic = mood === "sad" ? 57 : 60; let previous = tonic + scale[2];
-  return Array.from({ length: 8 }, (_, index) => {
-    const choices = scale.map(step => tonic + step).filter(pitch => !["calm", "dreamy"].includes(mood) || Math.abs(pitch - previous) <= 5);
-    let pitch = choices[Math.floor(random() * choices.length)] || previous;
-    if (["bright", "energetic"].includes(mood) && random() > 0.63) pitch += 12;
-    previous = pitch;
-    return { id: nextNoteId++, pitch: clamp(pitch, 55, 79), start: index, length: 1 };
-  });
-}
-async function generateFromPrompt() {
-  const prompt = $("scenePrompt").value.trim();
-  if (!prompt) { $("scenePrompt").focus(); return tell("Describe a scene first, for example a gentle melody on a rainy evening."); }
-  const token = ++loadingVersion; $("generateBtn").disabled = true;
-  try {
-    context(); const mood = inferMood(prompt), notes = generateNotes(prompt, mood), controls = { ...DEFAULT_SETTINGS, tempo: Number($("tempoControl").value) };
-    const result = await Engine.render(notes, null, controls, { cancelled: () => token !== loadingVersion });
-    if (token !== loadingVersion) return;
-    await startSession("generate", prompt, notes, bufferFromRendered(result), null, controls);
-    $("loadedFile").classList.add("hidden"); $("dropZone").classList.remove("hidden");
-    selectSourceTab("generate"); tell("Generated a " + mood + " melody. Drag its notes to change the audio.");
-  } catch (error) { if (error.name !== "AbortError") tell("Generation failed: " + error.message); }
-  finally { if (token === loadingVersion) $("generateBtn").disabled = false; }
-}
-$("generateBtn").addEventListener("click", generateFromPrompt);
-$("scenePrompt").addEventListener("keydown", event => { if (event.key === "Enter" && !$("generateBtn").disabled) generateFromPrompt(); });
-$("tempoControl").addEventListener("input", event => { $("tempoValue").textContent = event.target.value + " BPM"; });
-
-function trackBeats() {
-  return Math.max(sourceMode === "upload" ? 0.1 : 8, ...editedNotes.map(note => note.start + note.length));
-}
-function resizeTrackCanvas() {
-  // The bitmap is always viewport-sized. Moving the view changes time offsets,
-  // never the element width or the surrounding page layout.
-  $("trackCanvas").style.width = "100%";
-}
 function geometry() {
-  const rect = $("trackCanvas").getBoundingClientRect(), left = 45, top = 12, bottom = 22;
-  const low = sourceMode === "upload" ? 48 : 55, high = sourceMode === "upload" ? 72 : 79;
-  const beats = trackBeats(), plotW = Math.max(1, rect.width - left - 12), plotH = Math.max(1, rect.height - top - bottom);
-  const minimumScale = sourceMode === "upload" && originalNotes.length ? 24 / originalNotes[0].length : plotW / 8;
-  const beatW = Math.max(plotW / beats, minimumScale);
-  const visibleBeats = Math.min(beats, plotW / beatW), maxOffset = Math.max(0, beats - visibleBeats);
-  trackOffsetBeats = clamp(trackOffsetBeats, 0, maxOffset);
-  return { rect, left, top, low, high, beats, plotW, plotH, bottom, beatW, visibleBeats, maxOffset,
-    offset: trackOffsetBeats, rowH: plotH / (high - low + 1) };
+  const rect = $("trackCanvas").getBoundingClientRect(), left = 48, top = 18, bottom = 25;
+  const end = history ? Math.max(...curveEntities().map(item => Versions.duration(item.state))) : 1;
+  const requested = Number($("zoomControl").value), span = requested > 0 ? Math.min(end, requested) : end;
+  const maxOffset = Math.max(0, end - span); viewOffset = Engine.clamp(viewOffset, 0, maxOffset);
+  const width = Math.max(1, rect.width - left - 12), height = Math.max(1, rect.height - top - bottom);
+  return { rect, left, top, bottom, width, height, end, span, maxOffset, offset: viewOffset, px: width / Math.max(0.001, span), y: value => top + (12 - value) / 24 * height };
 }
-function syncTrackNavigation(g = geometry()) {
-  const loaded = hasSession();
-  $("trackNavigation").classList.toggle("hidden", !loaded);
-  $("trackPan").disabled = !loaded || g.maxOffset < 0.000001;
-  $("trackPan").value = g.maxOffset ? Math.round(g.offset / g.maxOffset * 1000) : 0;
-  $("panLeftBtn").disabled = !loaded || g.offset <= 0.000001;
-  $("panRightBtn").disabled = !loaded || g.offset >= g.maxOffset - 0.000001;
-  const beatSeconds = Engine.beatSeconds(settings);
-  const range = timeLabel(g.offset * beatSeconds) + " – " + timeLabel((g.offset + g.visibleBeats) * beatSeconds);
-  $("viewRange").textContent = range;
-  $("trackPan").setAttribute("aria-valuetext", range);
+function firstPointAt(points, time) {
+  let lo = 0, hi = points.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (points[mid].time < time) lo = mid + 1; else hi = mid; }
+  return lo;
 }
-function panTrack(direction) {
-  if (!hasSession() || dragState) return;
-  const g = geometry();
-  autoFollowTrack = false;
-  trackOffsetBeats = clamp(g.offset + direction * g.visibleBeats * 0.8, 0, g.maxOffset);
-  drawTrack();
+function visiblePoints(state, g) {
+  const points = state.points, speed = state.settings.speed;
+  const spacing = points.length > 1 ? (points[1].time - points[0].time) / speed * g.px : 10;
+  const stride = Math.max(1, Math.ceil(9 / Math.max(0.001, spacing)));
+  const result = [], start = firstPointAt(points, (g.offset - 0.01) * speed), end = (g.offset + g.span + 0.01) * speed;
+  for (let i = start; i < points.length && points[i].time <= end; i++) if (i % stride === 0 || points[i].id === selectedPointId || i === points.length - 1) result.push(points[i]);
+  return result;
 }
-function followPlayhead() {
-  if (!hasSession() || dragState || !autoFollowTrack) return;
-  const g = geometry(), beat = playbackProgress / Engine.beatSeconds(settings);
-  if (beat < g.offset || beat > g.offset + g.visibleBeats - g.visibleBeats * 0.08) {
-    trackOffsetBeats = clamp(beat - g.visibleBeats * 0.25, 0, g.maxOffset);
-  }
-}
-$("panLeftBtn").addEventListener("click", () => panTrack(-1));
-$("panRightBtn").addEventListener("click", () => panTrack(1));
-$("trackPan").addEventListener("input", event => {
-  if (!hasSession() || dragState) return;
-  const g = geometry();
-  autoFollowTrack = false;
-  trackOffsetBeats = g.maxOffset * clamp(Number(event.target.value) / 1000, 0, 1);
-  drawTrack();
-});
 function drawTrack() {
-  const canvas = $("trackCanvas"), rect = canvas.getBoundingClientRect();
-  if (!rect.width || !rect.height) return;
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const pixelWidth = Math.round(rect.width * dpr), pixelHeight = Math.round(rect.height * dpr);
-  const resized = canvas.width !== pixelWidth || canvas.height !== pixelHeight;
-  if (resized) { canvas.width = pixelWidth; canvas.height = pixelHeight; }
+  const canvas = $("trackCanvas"), rect = canvas.getBoundingClientRect(); if (!rect.width || !rect.height) return;
+  canvas.style.width = "100%";
+  const dpr = Math.min(window.devicePixelRatio || 1, 2), width = Math.round(rect.width * dpr), height = Math.round(rect.height * dpr);
+  const resized = canvas.width !== width || canvas.height !== height;
+  if (resized) { canvas.width = width; canvas.height = height; }
   const ctx = canvas.getContext("2d"); if (resized) ctx.scale(dpr, dpr); ctx.clearRect(0, 0, rect.width, rect.height);
-  syncTrackNavigation();
-  if (!hasSession()) return;
-  drawNotes(ctx);
-}
-function drawNotes(ctx) {
-  const g = geometry(), height = g.rect.height, width = g.rect.width, right = g.left + g.plotW;
-  ctx.fillStyle = "#f9fbfc"; ctx.fillRect(0, 0, width, height);
-  for (let pitch = g.low; pitch <= g.high; pitch++) {
-    const y = g.top + (g.high - pitch) * g.rowH;
-    ctx.fillStyle = pitch % 12 === 0 ? "#f0f4f5" : "#fff"; ctx.fillRect(g.left, y, g.plotW, g.rowH);
-    ctx.strokeStyle = "#e7ecee"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(g.left, y); ctx.lineTo(right, y); ctx.stroke();
-    if (sourceMode === "upload" ? (pitch - 60) % 6 === 0 : pitch % 12 === 0) {
-      ctx.fillStyle = "#74828b"; ctx.font = "9px Segoe UI,sans-serif"; ctx.fillText(pitchLabel(pitch), 3, y + g.rowH * 0.75);
-    }
-  }
-  const tick = Math.max(1, Math.ceil(70 / g.beatW));
-  for (let beat = Math.ceil(g.offset / tick) * tick; beat <= g.offset + g.visibleBeats; beat += tick) {
-    const x = g.left + (beat - g.offset) * g.beatW;
-    ctx.strokeStyle = beat % 4 === 0 ? "#cbd5d9" : "#e5eaec"; ctx.beginPath(); ctx.moveTo(x, g.top); ctx.lineTo(x, height - g.bottom); ctx.stroke();
-    ctx.fillStyle = "#71808a"; ctx.font = "9px monospace";
-    ctx.fillText(timeLabel(beat * Engine.beatSeconds(settings)), Math.min(right - 30, x + 3), height - 6);
+  const g = geometry();
+  $("trackPan").disabled = !history || g.maxOffset < 0.000001; $("trackPan").value = g.maxOffset ? Math.round(g.offset / g.maxOffset * 1000) : 0;
+  $("panLeftBtn").disabled = !history || g.offset < 0.000001; $("panRightBtn").disabled = !history || g.offset >= g.maxOffset - 0.000001;
+  $("viewRange").textContent = precise(g.offset) + " – " + precise(g.offset + g.span);
+  if (!history) return;
+  ctx.fillStyle = "#fbfcfd"; ctx.fillRect(0, 0, rect.width, rect.height);
+  ctx.save(); ctx.beginPath(); ctx.rect(g.left, g.top, g.width, g.height); ctx.clip();
+  for (const region of currentComparison?.regions || []) {
+    const x = g.left + (region.start - g.offset) * g.px, end = g.left + (region.end - g.offset) * g.px;
+    if (end < g.left || x > g.left + g.width) continue;
+    ctx.fillStyle = region.status === "modified" ? "#f0bc822b" : "#b7c3ca15"; ctx.fillRect(x, g.top, end - x, g.height);
+    if (region.status === "modified") { ctx.fillStyle = "#d5904d"; ctx.fillRect(x, g.top, end - x, 4); }
   }
   if (activeSelection) {
-    const x1 = clamp(g.left + (activeSelection.start / Engine.beatSeconds(settings) - g.offset) * g.beatW, g.left, right);
-    const x2 = clamp(g.left + (activeSelection.end / Engine.beatSeconds(settings) - g.offset) * g.beatW, g.left, right);
-    if (x2 > x1) {
-      ctx.fillStyle = "#66be9c2a"; ctx.fillRect(x1, g.top, x2 - x1, g.plotH);
-      ctx.strokeStyle = "#28966e"; ctx.lineWidth = 1;
-      for (const x of [x1, x2]) { ctx.beginPath(); ctx.moveTo(x, g.top); ctx.lineTo(x, height - g.bottom); ctx.stroke(); }
+    const x = g.left + (activeSelection.start - g.offset) * g.px, end = g.left + (activeSelection.end - g.offset) * g.px;
+    ctx.fillStyle = "#53b78c23"; ctx.fillRect(x, g.top, end - x, g.height);
+    ctx.strokeStyle = "#337f64"; ctx.lineWidth = 1;
+    for (const at of [x, end]) { ctx.beginPath(); ctx.moveTo(at, g.top); ctx.lineTo(at, g.top + g.height); ctx.stroke(); }
+  }
+  for (let value = -12; value <= 12; value += 2) { ctx.strokeStyle = value === 0 ? "#d1d9df" : "#edf0f3"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(g.left, g.y(value)); ctx.lineTo(g.left + g.width, g.y(value)); ctx.stroke(); }
+  const tick = Math.max(0.1, 10 ** Math.floor(Math.log10(Math.max(0.1, g.span / 7)))) * (g.span / 7 >= 2 ? 2 : 1);
+  for (let t = Math.ceil(g.offset / tick) * tick; t <= g.offset + g.span; t += tick) { const x = g.left + (t - g.offset) * g.px; ctx.strokeStyle = "#e8edf0"; ctx.beginPath(); ctx.moveTo(x, g.top); ctx.lineTo(x, g.top + g.height); ctx.stroke(); }
+  const lines = curveEntities().filter(versionVisible).sort((a, b) => Number(a.id === selectedVersionId) - Number(b.id === selectedVersionId));
+  // Original is a thick grey underlay, visible even when another curve is identical.
+  lines.sort((a, b) => a.id === "original" ? -1 : b.id === "original" ? 1 : 0);
+  for (const item of lines) {
+    const state = item.state, speed = state.settings.speed, points = state.points;
+    ctx.globalAlpha = item.id === "original" || item.id === selectedVersionId || item.id === playingId ? 1 : 0.28;
+    ctx.strokeStyle = item.color; ctx.lineWidth = item.id === "original" ? 6 : item.id === playingId ? 4 : item.id === selectedVersionId ? 3 : 1.8;
+    ctx.beginPath(); let started = false;
+    for (let i = Math.max(1, firstPointAt(points, g.offset * speed)); i < points.length; i++) {
+      const a = points[i - 1], b = points[i], ta = a.time / speed, tb = b.time / speed;
+      if (ta > g.offset + g.span) break;
+      if (tb < g.offset) continue;
+      const x1 = g.left + (ta - g.offset) * g.px, x2 = g.left + (tb - g.offset) * g.px;
+      if (!started) { ctx.moveTo(x1, g.y(a.value)); started = true; }
+      ctx.bezierCurveTo(x1 + (x2 - x1) / 3, g.y(a.value), x2 - (x2 - x1) / 3, g.y(b.value), x2, g.y(b.value));
+    }
+    ctx.stroke(); ctx.globalAlpha = 1;
+  }
+  if (history) {
+    const state = selectedVersionId === "draft" ? workingState() : entity(selectedVersionId).state, color = entity(selectedVersionId).color;
+    for (const point of visiblePoints(state, g)) {
+      const x = g.left + (point.time / state.settings.speed - g.offset) * g.px, y = g.y(point.value);
+      ctx.beginPath(); ctx.arc(x, y, point.id === selectedPointId ? 5 : 3, 0, Math.PI * 2); ctx.fillStyle = "#fff"; ctx.fill(); ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.stroke();
+      if (point.id === selectedPointId) {
+        const text = pitchText(point.value), tx = Engine.clamp(x - 30, g.left + 2, g.left + g.width - 135), ty = Engine.clamp(y - 17, g.top + 15, g.top + g.height - 5);
+        ctx.fillStyle = "#fff"; ctx.fillRect(tx - 3, ty - 12, 138, 17); ctx.fillStyle = color; ctx.font = "11px Segoe UI,sans-serif"; ctx.fillText(text, tx, ty);
+      }
     }
   }
-  const reference = new Map(originalNotes.map(note => [note.id, note]));
-  for (const note of editedNotes) {
-    const rawX = g.left + (note.start - g.offset) * g.beatW + 2;
-    const rawEnd = rawX + Math.max(5, note.length * g.beatW - 4);
-    if (rawEnd <= g.left || rawX >= right) continue;
-    const x = Math.max(g.left, rawX), end = Math.min(right, rawEnd);
-    const y = g.top + (g.high - note.pitch) * g.rowH + 1, w = end - x, h = Math.max(5, g.rowH - 2);
-    const same = Engine.sameItem(reference.get(note.id), note, originalSettings, settings);
-    ctx.fillStyle = same ? "#b7c3ca" : "#f0bc82"; ctx.beginPath(); ctx.roundRect(x, y, w, h, Math.min(4, h / 2, w / 2)); ctx.fill();
-    if (note.id === selectedNoteId) { ctx.strokeStyle = "#357694"; ctx.lineWidth = 1.5; ctx.stroke(); }
-  }
-  const x = g.left + (playbackProgress / Engine.beatSeconds(settings) - g.offset) * g.beatW;
-  if (playbackProgress > 0 && x >= g.left && x <= right) {
-    ctx.strokeStyle = "#df695e"; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x, g.top); ctx.lineTo(x, height - g.bottom); ctx.stroke();
-    ctx.beginPath(); ctx.fillStyle = "#fff"; ctx.arc(x, g.top + g.rowH * 2, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  }
+  if (preparedId && playbackProgress >= g.offset && playbackProgress <= g.offset + g.span) { const x = g.left + (playbackProgress - g.offset) * g.px; ctx.strokeStyle = "#d56058"; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x, g.top); ctx.lineTo(x, g.top + g.height); ctx.stroke(); }
+  ctx.restore();
+  ctx.fillStyle = "#6d7e89"; ctx.font = "10px Segoe UI,sans-serif";
+  for (const value of [-12, -6, 0, 6, 12]) ctx.fillText((value > 0 ? "+" : "") + value + " st", 3, g.y(value) + 3);
+  ctx.font = "9px monospace";
+  for (let t = Math.ceil(g.offset / tick) * tick; t <= g.offset + g.span; t += tick) { const x = g.left + (t - g.offset) * g.px; ctx.fillText(t.toFixed(g.span < 5 ? 1 : 0) + "s", Math.min(g.left + g.width - 28, x + 2), rect.height - 7); }
 }
-function pointerTime(event) {
-  const g = geometry();
-  const beat = g.offset + clamp(event.clientX - g.rect.left - g.left, 0, g.plotW) / g.beatW;
-  return clamp(beat * Engine.beatSeconds(settings), 0, editedBuffer?.duration || 0);
-}
+function pointerTime(event, g = geometry()) { return Engine.clamp(g.offset + (event.clientX - g.rect.left - g.left) / g.px, 0, g.end); }
 $("trackCanvas").addEventListener("pointerdown", event => {
-  if (!hasSession()) return;
+  if (!history || rendering) return;
+  stopPlayback(); const g = geometry(), x = event.clientX - g.rect.left, y = event.clientY - g.rect.top;
   $("trackCanvas").setPointerCapture(event.pointerId);
-  if (event.shiftKey && sourceMode === "upload") {
-    if (rendering) return;
-    dragState = { type: "range", start: pointerTime(event) }; activeSelection = null;
-  } else {
-    const g = geometry(), x = event.clientX - g.rect.left, y = event.clientY - g.rect.top;
-    const note = [...editedNotes].reverse().find(item => {
-      const nx = g.left + (item.start - g.offset) * g.beatW, ny = g.top + (g.high - item.pitch) * g.rowH;
-      return x >= g.left && x <= g.left + g.plotW && x >= nx && x <= nx + Math.max(8, item.length * g.beatW) && y >= ny && y <= ny + g.rowH;
-    });
-    selectedNoteId = note?.id ?? null;
-    if (note) {
-      activeSelection = null;
-      dragState = { type: "note", before: snapshot(), id: note.id, x, y, start: note.start, pitch: note.pitch, g };
-    } else if (sourceMode === "upload" && !rendering) {
-      dragState = { type: "range", start: pointerTime(event) }; activeSelection = null;
+  if (!event.shiftKey) {
+    const selectedState = entity(selectedVersionId).state;
+    const point = visiblePoints(selectedState, g).map(p => ({ point: p, distance: Math.hypot(g.left + (p.time / selectedState.settings.speed - g.offset) * g.px - x, g.y(p.value) - y) })).sort((a, b) => a.distance - b.distance)[0];
+    if (point && point.distance <= 9) {
+      if (!editable()) {
+        if (history.dirty()) { tell("Save the unsaved version before starting another edit."); return; }
+        history.checkout("original"); selectedVersionId = "draft"; workingBuffer = originalBuffer; renderedSignature = signature(history.working);
+      }
+      selectedPointId = history.working.points.reduce((nearest, item) => Math.abs(item.time - point.point.time / selectedState.settings.speed) < Math.abs(nearest.time - point.point.time / selectedState.settings.speed) ? item : nearest).id;
+      const index = history.working.points.findIndex(p => p.id === selectedPointId), points = history.working.points;
+      activeSelection = { start: (points[Math.max(0, index - 1)].time) / history.working.settings.speed, end: points[Math.min(points.length - 1, index + 1)].time / history.working.settings.speed };
+      dragState = { type: "point", g, y, index, before: Versions.clone(history.working), value: points[index].value, selected: selectedVersionId };
+      renderUI(); return;
     }
-    updateUI();
   }
+  if (!event.shiftKey) {
+    const time = pointerTime(event, g);
+    const nearest = curveEntities().filter(item => versionVisible(item) && time <= Versions.duration(item.state)).map(item => ({ item, distance: Math.abs(g.y(Engine.curveValue(item.state.points, time * item.state.settings.speed)) - y) })).sort((a, b) => a.distance - b.distance || Number(b.item.id === selectedVersionId) - Number(a.item.id === selectedVersionId))[0];
+    if (nearest && nearest.distance <= 9) { selectVersion(nearest.item.id); return; }
+  }
+  dragState = { type: "range", start: pointerTime(event, g), previous: activeSelection }; activeSelection = null; selectedPointId = null; drawTrack();
 });
 $("trackCanvas").addEventListener("pointermove", event => {
   if (!dragState) return;
-  if (dragState.type === "range") {
-    const end = pointerTime(event); activeSelection = { start: Math.min(end, dragState.start), end: Math.max(end, dragState.start) }; updateUI(); return;
-  }
-  const g = dragState.g, x = event.clientX - g.rect.left, y = event.clientY - g.rect.top;
-  const note = editedNotes.find(item => item.id === dragState.id); if (!note) return;
-  const dx = x - dragState.x, dy = y - dragState.y;
-  if (Math.abs(dx) + Math.abs(dy) < 3) return;
-  const snap = sourceMode === "upload" ? Math.max(0.05 / Engine.beatSeconds(settings), 0.01) : 0.25;
-  note.start = Math.max(0, Math.round((dragState.start + dx / g.beatW) / snap) * snap);
-  note.pitch = clamp(dragState.pitch - Math.round(dy / g.rowH), g.low, g.high); updateUI();
+  if (dragState.type === "range") { const end = pointerTime(event); activeSelection = { start: Math.min(end, dragState.start), end: Math.max(end, dragState.start) }; $("selectionLabel").textContent = "Selected: " + precise(activeSelection.start) + "–" + precise(activeSelection.end); drawTrack(); return; }
+  const value = Engine.clamp(Math.round((dragState.value - (event.clientY - dragState.g.rect.top - dragState.y) * 24 / dragState.g.height) * 4) / 4, -12, 12);
+  if (value === dragState.value && !draftPreview) return;
+  if (!draftPreview) draftPreview = Versions.clone(dragState.before); draftPreview.points[dragState.index].value = value;
+  selectedVersionId = "draft";
+  $("pitchValue").textContent = pitchText(value); $("pitchControl").value = value; $("selectedPointLabel").textContent = "Preview · " + pitchText(value);
+  $("saveVersionBtn").disabled = true; drawTrack();
 });
 $("trackCanvas").addEventListener("pointerup", async () => {
   const drag = dragState; dragState = null;
-  if (drag?.type === "note" && !stateEqual(drag.before, currentRevision())) {
-    await commitEdit(drag.before, "Drag " + itemName().toLowerCase()); tell("The block's pitch and timing changes have been applied to the edited audio.");
-  }
+  if (drag?.type === "point") {
+    const next = draftPreview; draftPreview = null;
+    if (next && history.apply(next, "Drag pitch control point")) { renderUI(); if (await renderWorking()) tell("Pitch adjustment applied to the working audio. Save version to keep an independent snapshot."); }
+    else renderUI();
+  } else if (drag?.type === "range") { if (!activeSelection || activeSelection.end - activeSelection.start < 0.025) activeSelection = null; renderUI(); }
 });
 $("trackCanvas").addEventListener("pointercancel", () => {
-  if (dragState?.type === "note") { editedNotes = copyNotes(dragState.before.notes); updateUI(); }
-  dragState = null;
+  if (dragState?.type === "point") selectedVersionId = dragState.selected;
+  else if (dragState?.type === "range") activeSelection = dragState.previous;
+  dragState = null; draftPreview = null; renderUI();
 });
-
-$("notePitch").addEventListener("change", async event => {
-  const note = editedNotes.find(item => item.id === selectedNoteId); if (!note) return;
-  const before = snapshot(); note.pitch = Number(event.target.value); await commitEdit(before, "Change pitch");
+async function applyWorking(next, action) {
+  if (!history || !history.apply(next, action)) return false;
+  selectedVersionId = "draft";
+  renderUI(); return renderWorking();
+}
+$("pitchControl").addEventListener("input", event => { $("pitchValue").textContent = pitchText(Number(event.target.value)); });
+$("pitchControl").addEventListener("change", async event => {
+  if (!history || selectedPointId === null) return;
+  const next = Versions.clone(history.working); next.points.find(p => p.id === selectedPointId).value = Number(event.target.value);
+  try { await applyWorking(next, "Set point pitch adjustment"); } catch (error) { tell(error.message); }
 });
-$("noteLength").addEventListener("change", async event => {
-  const note = editedNotes.find(item => item.id === selectedNoteId); if (!note) return;
-  const before = snapshot(); note.length = Number(event.target.value); await commitEdit(before, "Change length");
+$("resetPointBtn").addEventListener("click", async () => {
+  if (!history || selectedPointId === null) return;
+  const next = Versions.clone(history.working); next.points.find(p => p.id === selectedPointId).value = 0; await applyWorking(next, "Reset point");
 });
-$("duplicateNoteBtn").addEventListener("click", async () => {
-  const note = editedNotes.find(item => item.id === selectedNoteId); if (!note) return;
-  const before = snapshot(), duplicate = { ...note, id: nextNoteId++, start: note.start + note.length };
-  editedNotes.push(duplicate); selectedNoteId = duplicate.id; await commitEdit(before, "Duplicate");
-});
-$("deleteNoteBtn").addEventListener("click", async () => {
-  if (selectedNoteId === null) return;
-  const before = snapshot(); editedNotes = editedNotes.filter(note => note.id !== selectedNoteId); selectedNoteId = null; await commitEdit(before, "Delete");
-});
-$("addNoteBtn").addEventListener("click", async () => {
-  if (!hasSession()) return;
-  const before = snapshot(), last = [...editedNotes].sort((a, b) => a.start - b.start).at(-1);
-  const note = { id: nextNoteId++, pitch: last?.pitch || (sourceMode === "upload" ? 60 : 67), start: last ? last.start + last.length : 0, length: 1 };
-  if (sourceMode === "upload") {
-    note.sampleStart = last?.sampleStart ?? 0; note.sampleEnd = last?.sampleEnd ?? Math.min(0.5, originalBuffer.duration);
+$("clearSelectionBtn").addEventListener("click", () => { activeSelection = null; renderUI(); });
+async function setting(key, value) {
+  if (!history || entity(selectedVersionId).state.settings[key] === value) return;
+  if (selectedVersionId !== "draft") {
+    if (history.dirty()) { renderUI(); tell("Save the unsaved version before starting another edit."); return; }
+    stopPlayback(); history.checkout("original"); selectedVersionId = "draft"; selectedPointId = null;
+    workingBuffer = originalBuffer; renderedSignature = signature(history.working);
   }
-  editedNotes.push(note); selectedNoteId = note.id; await commitEdit(before, "Add");
-});
-$("suggestBtn").addEventListener("click", async () => {
-  if (!editedNotes.length) return;
-  const before = snapshot(), direction = $("suggestionDirection").value, sorted = [...editedNotes].sort((a, b) => a.start - b.start);
-  const low = sourceMode === "upload" ? 48 : 55, high = sourceMode === "upload" ? 72 : 79;
-  sorted.forEach((note, index) => {
-    const previous = sorted[index - 1];
-    if (direction === "higher") note.pitch = clamp(note.pitch + 2, low, high);
-    if (direction === "varied" && index % 3 === 1) note.pitch = clamp(note.pitch + (index % 2 ? 4 : -4), low, high);
-    if (previous && direction === "simpler" && Math.abs(note.pitch - previous.pitch) > 4) note.pitch = Math.round((note.pitch + previous.pitch) / 2);
-    if (previous && direction === "smoother" && Math.abs(note.pitch - previous.pitch) > 3) note.pitch = previous.pitch + Math.sign(note.pitch - previous.pitch) * 2;
-  });
-  if (stateEqual(before, currentRevision())) {
-    appendLog("Suggestion · " + direction, "This rule made no further changes. Try Higher or More varied for a different revision."); updateUI(); tell("No further changes were needed for this rule."); return;
-  }
-  $("suggestionInfo").textContent = sourceMode === "upload" ? "A rule-based relative-transposition suggestion is ready. The recording's actual melody was not transcribed." : "A rule-based melody revision is ready. Listen, edit, accept or reject.";
-  await commitEdit(before, "Suggestion · " + direction);
-});
-$("acceptBtn").addEventListener("click", () => {
-  const before = snapshot(); pushUndo(before); acceptedRevision = currentRevision();
-  appendLog("Accept revision", "Saved the current revision as the accepted version. The untouched original and its comparison reference are preserved."); updateUI(); tell("Revision accepted. The original remains available for comparison.");
-});
-$("rejectBtn").addEventListener("click", async () => {
-  if (!acceptedRevision) return;
-  const before = snapshot(); editedNotes = copyNotes(acceptedRevision.notes); settings = { ...acceptedRevision.settings }; selectedNoteId = null;
-  await commitEdit(before, "Reject revision"); tell("Restored the last accepted version, or the original if nothing has been accepted.");
-});
-
-async function changeSetting(key, value, action) {
-  if (!hasSession()) return;
-  const before = snapshot(); settings[key] = value; await commitEdit(before, action);
+  const state = Versions.clone(history.working); state.settings[key] = value;
+  try { if (!await applyWorking(state, "Change " + key)) renderUI(); } catch (error) { tell(error.message); }
 }
 $("volumeControl").addEventListener("input", event => { $("volumeValue").textContent = event.target.value + "%"; });
-$("volumeControl").addEventListener("change", event => changeSetting("volume", Number(event.target.value), "Adjust volume"));
+$("volumeControl").addEventListener("change", event => setting("volume", Number(event.target.value)));
 $("speedControl").addEventListener("input", event => { $("speedValue").textContent = Number(event.target.value).toFixed(2) + "×"; });
-$("speedControl").addEventListener("change", event => changeSetting("speed", Number(event.target.value), "Adjust speed"));
-$("fadeInBtn").addEventListener("click", () => changeSetting("fadeIn", !settings.fadeIn, "Toggle fade in"));
-$("fadeOutBtn").addEventListener("click", () => changeSetting("fadeOut", !settings.fadeOut, "Toggle fade out"));
-async function modifyRange(keep) {
-  if (!activeSelection || activeSelection.end - activeSelection.start <= 0.02) return;
-  const next = Engine.editRange(editedNotes, activeSelection, keep, settings, () => nextNoteId++);
-  if (!next.length) return tell("This edit would remove all audio. Choose a different range.");
-  const before = snapshot(); editedNotes = next; selectedNoteId = null;
-  await commitEdit(before, keep ? "Keep selected range" : "Remove selected range");
+$("speedControl").addEventListener("change", event => setting("speed", Number(event.target.value)));
+async function saveVersion() {
+  if (!history || rendering) return null;
+  let saved = null;
+  if (selectedVersionId === "draft" || history.dirty()) {
+    if (!workingBuffer || renderedSignature !== signature(history.working)) { renderUI(); if (!await renderWorking()) return null; }
+    saved = history.save("Added version", null, history.baseId, true);
+    if (workingBuffer) cacheAudio(saved.id, workingBuffer);
+  }
+  stopPlayback(); history.checkout("original"); selectedVersionId = "draft"; selectedPointId = null;
+  workingBuffer = originalBuffer; renderedSignature = signature(history.working);
+  renderUI(); tell((saved ? saved.name + " saved. " : "") + "Version " + history.nextVersion + " starts from Original."); return saved;
 }
-$("keepSelectionBtn").addEventListener("click", () => modifyRange(true));
-$("deleteSelectionBtn").addEventListener("click", () => modifyRange(false));
-
-function playVersion(version) {
-  const url = version === "original" ? originalUrl : editedUrl;
-  if (!url || (version === "edited" && (rendering || !editedBuffer))) return;
-  autoFollowTrack = true; playbackVersion = version; $("audioPlayer").src = url; $("audioPlayer").load();
-  $("audioPlayer").play().catch(() => tell("Press Play in the audio controls to start playback."));
-  tell("Playing the " + version + " version.");
+$("saveVersionBtn").addEventListener("click", saveVersion);
+$("undoBtn").addEventListener("click", async () => { if (!history?.undo()) return; selectedVersionId = "draft"; selectedPointId = null; renderUI(); await renderWorking(); });
+$("redoBtn").addEventListener("click", async () => { if (!history?.redo()) return; selectedVersionId = "draft"; selectedPointId = null; renderUI(); await renderWorking(); });
+$("versionPicker").addEventListener("change", event => selectVersion(event.target.value));
+$("zoomControl").addEventListener("change", () => { autoFollow = false; drawTrack(); });
+$("trackPan").addEventListener("input", event => { autoFollow = false; const g = geometry(); viewOffset = g.maxOffset * Engine.clamp(Number(event.target.value) / 1000, 0, 1); drawTrack(); });
+for (const [id, direction] of [["panLeftBtn", -1], ["panRightBtn", 1]]) $(id).addEventListener("click", () => { const g = geometry(); autoFollow = false; viewOffset = Engine.clamp(g.offset + g.span * 0.8 * direction, 0, g.maxOffset); drawTrack(); });
+async function playVersion(id, range = null, next = null) {
+  if (!entity(id)) return;
+  const token = stopPlayback(), epoch = sessionEpoch;
+  $("playbackLabel").textContent = "Preparing " + entity(id).name + "…";
+  try {
+    const buffer = await getBuffer(id); if (token !== playbackToken || epoch !== sessionEpoch) return;
+    prepareBuffer(buffer, id, range); selectedVersionId = id; playingId = id; sequentialNext = next?.length ? next : null; autoFollow = true;
+    $("playbackLabel").textContent = "Playing " + entity(id).name + (range ? " · " + precise(range.start) + "–" + precise(range.end) : " · full version") + (next?.length ? " · next version follows" : "");
+    renderUI(); await $("audioPlayer").play();
+  } catch (error) { if (token === playbackToken) { sequentialNext = null; tell("Playback failed: " + error.message + ". Try the native Play control or another file."); } }
 }
-$("playOriginalBtn").addEventListener("click", () => playVersion("original"));
-$("playEditedBtn").addEventListener("click", () => playVersion("edited"));
-$("audioPlayer").addEventListener("play", () => { autoFollowTrack = true; });
+$("playSelectedBtn").addEventListener("click", () => playVersion(selectedVersionId));
+$("pausePlaybackBtn").addEventListener("click", () => { $("audioPlayer").pause(); sequentialNext = null; $("playbackLabel").textContent = preparedId ? "Paused " + entity(preparedId).name : "Playback stopped"; renderUI(); });
+$("playAllSegmentsBtn").addEventListener("click", () => {
+  const range = segmentRange(); if (!range || !history) return;
+  const queue = entities().map(item => ({id:item.id,range})); const first = queue.shift();
+  return playVersion(first.id,first.range,queue);
+});
+$("audioPlayer").addEventListener("play", () => { if (preparedId) { selectedVersionId = preparedId; playingId = preparedId; autoFollow = true; renderUI(); } });
+$("audioPlayer").addEventListener("pause", () => { if ($("audioPlayer").paused && !$("audioPlayer").ended) { sequentialNext = null; if (preparedId) $("playbackLabel").textContent = "Paused " + entity(preparedId).name; } });
+$("audioPlayer").addEventListener("ended", () => { const queue = sequentialNext; sequentialNext = null; if (queue?.length) { const [next,...rest] = queue; return playVersion(next.id,next.range,rest); } $("playbackLabel").textContent = "Playback finished"; renderUI(); });
 $("audioPlayer").addEventListener("timeupdate", () => {
-  playbackProgress = $("audioPlayer").currentTime;
-  const duration = $("audioPlayer").duration || editedBuffer?.duration || 0;
-  $("seekControl").value = duration ? Math.round(playbackProgress / duration * 1000) : 0;
-  $("trackStart").textContent = timeLabel(playbackProgress); $("trackEnd").textContent = timeLabel(duration); followPlayhead(); drawTrack();
+  playbackProgress = playbackOffset + $("audioPlayer").currentTime;
+  const duration = $("audioPlayer").duration || 0; $("seekControl").value = duration ? Math.round($("audioPlayer").currentTime / duration * 1000) : 0;
+  $("trackStart").textContent = timeLabel(playbackProgress); $("trackEnd").textContent = timeLabel(playbackOffset + duration);
+  const g = geometry(); if (autoFollow && (playbackProgress < g.offset || playbackProgress > g.offset + g.span * 0.93)) viewOffset = Engine.clamp(playbackProgress - g.span * 0.2, 0, g.maxOffset); drawTrack();
 });
-$("audioPlayer").addEventListener("error", () => { if ($("audioPlayer").getAttribute("src")) tell("Audio playback failed. Try rendering again with Undo / Redo or choose another file."); });
-$("seekControl").addEventListener("input", event => {
-  autoFollowTrack = true;
-  if (Number.isFinite($("audioPlayer").duration)) $("audioPlayer").currentTime = $("audioPlayer").duration * Number(event.target.value) / 1000;
-});
-$("downloadBtn").addEventListener("click", () => {
-  if (rendering || !editedBuffer || !editedUrl) return;
-  const link = document.createElement("a"); link.href = editedUrl;
-  link.download = (sourceMode === "upload" ? sessionName.replace(/\.[^.]+$/, "") : "melodycompare-generated") + "-edited.wav";
-  document.body.append(link); link.click(); link.remove(); tell("Exported the actual edited audio as 16-bit PCM WAV.");
-});
-configurePitchControl(); updateUI();
-window.addEventListener("resize", () => { resizeTrackCanvas(); drawTrack(); });
+$("audioPlayer").addEventListener("error", () => { sequentialNext = null; if ($("audioPlayer").getAttribute("src")) tell("Audio playback failed. Try a version Play button or another file."); });
+$("seekControl").addEventListener("input", event => { sequentialNext = null; autoFollow = true; if (Number.isFinite($("audioPlayer").duration)) $("audioPlayer").currentTime = $("audioPlayer").duration * Number(event.target.value) / 1000; });
+async function downloadVersion(id) {
+  if (!history || !entity(id)) return;
+  const epoch = sessionEpoch, name = entity(id).name;
+  try {
+    const buffer = await getBuffer(id); if (epoch !== sessionEpoch) return;
+    const url = URL.createObjectURL(wavBlob(id,buffer)), link = document.createElement("a"); link.href = url;
+    link.download = sessionName.replace(/\.[^.]+$/, "") + "-" + name.toLowerCase().replace(/\s+/g, "-") + ".wav";
+    document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url),1500);
+    tell("Downloaded " + name + " as processed 16-bit PCM WAV audio.");
+  } catch (error) { tell("Download failed: " + error.message); }
+}
+renderUI(); window.addEventListener("resize", drawTrack);

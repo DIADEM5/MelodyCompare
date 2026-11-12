@@ -1,77 +1,50 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#ffffff">
-  <title>MelodyCompare — Melody editing workspace</title>
-  <link rel="stylesheet" href="style.css">
-</head>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="theme-color" content="#ffffff"><title>MelodyCompare — Audio version comparison</title><link rel="stylesheet" href="style.css"></head>
 <body>
-  <main class="app-shell">
-    <header class="topbar">
-      <a class="brand" href="#top"><span class="brand-mark">♫</span><span>MelodyCompare<small>Melody comparison &amp; creation workspace</small></span></a>
-      <span class="privacy-note"><i></i>Audio stays in your browser</span>
-    </header>
-    <section class="intro" id="top">
-      <div><p class="eyebrow">MELODY SIMILARITY FEEDBACK</p><h1>Hear the change. <span>Make it yours.</span></h1><p class="subtitle">Import audio or describe a scene. Move the notes, listen to your changes, and compare versions.</p></div>
-    </section>
-    <section class="source-card card" aria-label="Audio source">
-      <div class="source-tabs" role="tablist" aria-label="Choose an audio source">
-        <button class="source-tab active" id="uploadTab" type="button" role="tab" aria-selected="true" aria-controls="uploadSource">Import local audio</button>
-        <button class="source-tab" id="generateTab" type="button" role="tab" aria-selected="false" aria-controls="generateSource">Create from a scene</button>
-      </div>
-      <div id="uploadSource" class="source-content" role="tabpanel">
-        <input id="audioFile" type="file" accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.flac,.webm" hidden>
-        <div class="upload-drop" id="dropZone" tabindex="0" role="button" aria-label="Choose or drop an audio file">
-          <span class="upload-icon">↑</span><div><strong>Drop an audio file here</strong><span>WAV, MP3 and other browser-supported formats · up to 5 minutes / 50 MB</span></div><button class="button button-dark" id="chooseFileBtn" type="button">Choose file</button>
-        </div>
-        <p class="fine-print">Imported audio becomes editable time slices. Pitch controls transpose those slices; they do not claim to detect the recording's melody.</p>
-      </div>
-      <div id="generateSource" class="source-content hidden" role="tabpanel">
-        <label class="prompt-label" for="scenePrompt">Describe the scene you want to hear</label>
-        <div class="prompt-row"><input id="scenePrompt" type="text" maxlength="160" placeholder="For example: a gentle piano melody on a rainy evening"><button class="button button-primary" id="generateBtn" type="button">✦ Generate melody</button></div>
-        <div class="generator-options"><label>Mood<select id="moodSelect"><option value="follow">Follow description</option><option value="calm">Calm</option><option value="bright">Bright</option><option value="dreamy">Dreamy</option><option value="sad">Sad</option><option value="energetic">Energetic</option></select></label><label>Tempo <span id="tempoValue">96 BPM</span><input id="tempoControl" type="range" min="60" max="150" value="96"></label></div>
-        <p class="fine-print">A local rule-based generator creates a random monophonic melody. No generative AI model is connected.</p>
-      </div>
-      <div id="loadedFile" class="loaded-file hidden"><span class="file-glyph">♫</span><div><strong id="fileName">—</strong><span id="fileInfo">—</span></div><button class="button button-light" id="replaceFileBtn" type="button">Replace file</button></div>
-    </section>
-    <div class="workspace-grid">
-      <section class="main-column">
-        <section class="card track-card">
-          <div class="track-header"><div><p class="eyebrow">MELODY TRACK</p><h2 id="trackTitle">Editable melody line</h2></div><div class="track-status"><span class="status-dot" id="sourceDot"></span><span id="sourceStatus">Waiting for audio</span></div></div>
-          <div class="track-legend"><span class="note-legend"><i class="legend-original"></i>Same as original</span><span class="note-legend"><i class="legend-edited"></i>Changed or added</span><span class="drag-hint" id="lineHelp">Move blocks up or down to change pitch, or left and right to change time.</span></div>
-          <div class="view-options hidden" id="viewOptions"><span class="slice-view-label">Editable slices</span><span class="slice-info" id="sliceInfo"></span></div>
-          <div class="roll-wrap" id="rollWrap"><canvas id="trackCanvas" aria-label="Editable pitch and timing blocks. Select a block to use the pitch and duration controls."></canvas><div class="empty-state" id="emptyState"><span>♫</span><strong>Import audio or generate a scene melody</strong><small>The blocks and the audio use the same editable data.</small></div></div>
-          <div class="track-navigation hidden" id="trackNavigation" aria-label="Timeline view navigation"><button class="button button-light" type="button" id="panLeftBtn" aria-label="Move timeline view left" disabled>◀</button><label for="trackPan">View</label><input id="trackPan" type="range" min="0" max="1000" step="1" value="0" disabled aria-label="Move the visible timeline left or right"><button class="button button-light" type="button" id="panRightBtn" aria-label="Move timeline view right" disabled>▶</button><span id="viewRange" class="view-range">00:00 – 00:00</span></div>
-          <div class="timeline-row"><span id="trackStart">00:00</span><input id="seekControl" type="range" min="0" max="1000" value="0" disabled aria-label="Playback position"><span id="trackEnd">00:00</span></div>
-          <audio id="audioPlayer" controls preload="metadata" class="audio-player" aria-label="Play, pause and seek audio"></audio>
-          <div class="track-actions">
-            <div class="button-row"><button class="button button-light" id="playOriginalBtn" type="button" disabled>▶ Original</button><button class="button button-dark" id="playEditedBtn" type="button" disabled>▶ Edited</button></div>
-            <div class="button-row"><button class="button button-light" id="undoBtn" type="button" disabled>↶ Undo</button><button class="button button-light" id="redoBtn" type="button" disabled>↷ Redo</button><button class="button button-light" id="resetBtn" type="button" disabled>Reset</button><button class="button button-primary" id="downloadBtn" type="button" disabled>↓ Export WAV</button></div>
-          </div>
-          <p class="source-caveat" id="sourceCaveat">Generated blocks represent notes. Imported blocks represent real audio slices, with relative pitch shifts rather than detected musical pitches.</p>
-        </section>
-        <section class="card edit-card" id="editCard">
-          <div class="section-heading"><div><p class="eyebrow">EDIT SELECTED NOTE</p><h2 id="editTitle">Note editing</h2></div><span id="selectedNoteLabel" class="selection-chip">No note selected</span></div>
-          <div class="note-controls" id="noteControls"><label><span id="pitchControlLabel">Pitch</span> <select id="notePitch" disabled></select></label><label>Length <select id="noteLength" disabled><option value="0.5">½ beat</option><option value="1">1 beat</option><option value="1.5">1.5 beats</option><option value="2">2 beats</option></select></label><button class="button button-light" id="duplicateNoteBtn" type="button" disabled>Duplicate</button><button class="button button-light button-red" id="deleteNoteBtn" type="button" disabled>Delete</button><button class="button button-light" id="addNoteBtn" type="button" disabled>＋ Add</button></div>
-          <div class="upload-tools hidden" id="uploadTools"><label>Volume <input id="volumeControl" type="range" min="0" max="150" value="100"><span id="volumeValue">100%</span></label><label>Speed <input id="speedControl" type="range" min="0.5" max="1.5" step="0.05" value="1"><span id="speedValue">1.00×</span></label><button class="button button-light" id="fadeInBtn" type="button">Fade in · 2s</button><button class="button button-light" id="fadeOutBtn" type="button">Fade out · 2s</button><div class="selection-actions"><span id="selectionLabel">Shift + drag on the track to select a time range</span><button class="button button-light" id="keepSelectionBtn" type="button" disabled>Keep range</button><button class="button button-light button-red" id="deleteSelectionBtn" type="button" disabled>Remove range</button></div></div>
-        </section>
-        <section class="card edit-card suggestion-card" id="suggestionCard">
-          <div class="section-heading"><div><p class="eyebrow">SUGGESTION</p><h2>Try a different direction</h2></div><span class="selection-chip">Simulated AI · rules only</span></div>
-          <div class="suggestion-row"><div><strong>Direction</strong><select id="suggestionDirection"><option value="smoother">Smoother</option><option value="simpler">Simpler</option><option value="varied">More varied</option><option value="higher">Higher</option></select></div><button class="button button-light" id="suggestBtn" type="button" disabled>✦ Generate suggestion</button><span id="suggestionInfo">Listen, continue editing, then accept or reject the revision.</span><div class="suggestion-actions"><button class="button button-primary" id="acceptBtn" type="button" disabled>Accept revision</button><button class="button button-light" id="rejectBtn" type="button" disabled>Reject revision</button></div></div>
-        </section>
+<main class="app-shell" id="top">
+  <header class="topbar"><a class="brand" href="#top"><span class="brand-mark">♫</span><span>MelodyCompare<small>Compare audio edits across versions</small></span></a><span class="privacy-note"><i></i>Audio stays in your browser</span></header>
+  <section class="intro"><p class="eyebrow">IMPORT · EDIT · LISTEN · COMPARE</p><h1>Hear every change. <span>Keep every version.</span></h1><p class="subtitle">Import one recording, adjust its pitch curve, then listen to and download each saved version.</p></section>
+  <section class="card source-card" aria-label="Import local audio">
+    <div class="section-heading"><h2>Import Local Audio</h2><button id="replaceFileBtn" class="button hidden" type="button">Replace file</button></div>
+    <input id="audioFile" type="file" accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.flac,.webm" hidden>
+    <div id="dropZone" class="upload-drop" role="button" tabindex="0" aria-label="Choose or drop a local audio file"><span class="upload-icon">↑</span><div><strong>Drop a WAV or MP3 here</strong><span>Short clips work best · maximum 50 MB / 5 minutes</span></div><button id="chooseFileBtn" class="button button-dark" type="button">Choose file</button></div>
+    <div id="loadedFile" class="loaded-file hidden"><span class="file-glyph">♫</span><div><strong id="fileName">—</strong><span id="fileInfo">—</span></div></div>
+    <p class="fine-print">Versions stay in this browser tab until refresh. Download any audio you want to keep.</p>
+  </section>
+  <div class="workspace-grid">
+    <section class="main-column">
+      <section class="card track-card">
+        <div class="track-header"><div><p class="eyebrow">SHARED TIMELINE</p><h2>Melody Curve</h2></div><span id="sourceStatus" class="track-status">Waiting for audio</span></div>
+        <p class="curve-note">Curves show <strong>relative pitch adjustment</strong>, not detected melody notes. Grey is the unchanged Original.</p>
+        <div class="track-legend"><span><i class="same-key"></i>Small or no edit</span><span><i class="changed-key"></i>Changed</span><label>Time window <select id="zoomControl"><option value="5">5 seconds</option><option value="10" selected>10 seconds</option><option value="20">20 seconds</option><option value="0">Full recording</option></select></label></div>
+        <div id="rollWrap" class="roll-wrap"><canvas id="trackCanvas" aria-label="Version pitch-adjustment curves. Drag a point to edit. Drag an empty area or Shift-drag to select a time range."></canvas><div id="emptyState" class="empty-state"><span>♫</span><strong>Import audio to start</strong><small>The Original remains unchanged.</small></div></div>
+        <div class="track-navigation"><button id="panLeftBtn" class="button" type="button" aria-label="Move view left" disabled>◀</button><label for="trackPan">View</label><input id="trackPan" type="range" min="0" max="1000" value="0" disabled><button id="panRightBtn" class="button" type="button" aria-label="Move view right" disabled>▶</button><span id="viewRange">00:00 – 00:00</span></div>
+        <p id="curveHelp" class="fine-print">Each new version starts from Original. Drag a curve point to adjust pitch. To select a listening range, drag an empty area or hold Shift while dragging.</p>
+        <div class="timeline-row"><span id="trackStart">00:00</span><input id="seekControl" type="range" min="0" max="1000" value="0" disabled aria-label="Playback position"><span id="trackEnd">00:00</span></div>
+        <audio id="audioPlayer" class="audio-player" controls preload="metadata" aria-label="Current version playback"></audio>
+        <div class="version-toolbar"><label>Version <select id="versionPicker" disabled aria-label="Choose audio version"></select></label><button id="playSelectedBtn" class="button version-play" type="button" disabled>▶ Play</button><button id="pausePlaybackBtn" class="button" type="button" disabled>Ⅱ Pause</button><button id="saveVersionBtn" class="button button-primary" type="button" disabled>＋ Add version</button></div>
+        <div class="track-actions"><span id="playbackLabel" role="status">Playback stopped</span><div class="button-row"><button id="undoBtn" class="button" type="button" disabled>↶ Undo</button><button id="redoBtn" class="button" type="button" disabled>↷ Redo</button></div></div>
+        <div id="wholePanel"><div class="working-changes"><strong id="versionChangesTitle">Changes</strong><ul id="versionChanges"><li>Import audio to begin.</li></ul></div>
+        <div class="point-tools"><span id="selectedPointLabel" class="selection-chip">No point selected</span><label>Pitch adjustment <input id="pitchControl" type="range" min="-12" max="12" step="0.25" value="0" disabled><strong id="pitchValue">0 semitones</strong></label><button id="resetPointBtn" class="button" type="button" disabled>Reset point</button></div></div>
       </section>
-      <aside class="feedback-column">
-        <section class="card feedback-card"><p class="eyebrow">GLOBAL SIMILARITY</p><h2 id="similarityTitle">Overall similarity</h2><div class="score-row"><strong id="similarityScore">—</strong><span id="similarityCount">Waiting for a reference</span></div><div class="meter"><div id="scoreBar"></div></div><p id="similarityMethod" class="feedback-copy">Load a source to compare its original items with your revision.</p></section>
-        <section class="card feedback-card local-card"><p class="eyebrow">LOCAL FEEDBACK</p><h2>Selected item &amp; edit history</h2><div class="local-note-box" id="localFeedback"><span class="local-icon">⌖</span><p>Select a block to see its pitch, timing and length changes.</p></div><div class="feedback-key"><span><i class="same-key"></i>Same</span><span><i class="changed-key"></i>Changed</span></div><div class="history-heading"><strong>Edit history</strong><span id="changeCount">0 changes</span></div><p id="historyEmpty" class="feedback-copy">Each committed edit will be recorded here.</p><ol id="changeHistory" class="change-history" aria-label="Complete chronological edit history"></ol></section>
-        <section class="card feedback-card explanation-card"><p class="eyebrow">HOW IT WORKS</p><h2>Feedback explanation</h2><p id="feedbackExplanation">Load a source to see its comparison method and current differences.</p><p id="feedbackLatest">No edits yet.</p></section>
-      </aside>
-    </div>
-    <div id="status" class="toast" role="status" aria-live="polite">Import local audio or create a scene melody to begin.</div>
-    <footer><span>MelodyCompare · A2 interactive system prototype</span><span>Rule-based generation · local audio processing</span></footer>
-  </main>
-  <script src="audio-engine.js"></script>
-  <script src="app.js"></script>
-</body>
-</html>
+      <section id="segmentPanel" class="card edit-card">
+        <div class="section-heading"><div><p class="eyebrow">SEGMENT LISTENING</p><h2>Select a segment and listen to each version</h2></div></div>
+        <p class="fine-print">Drag an empty area of the curve, or hold Shift while dragging across a point, to select a time span. Each button plays that span in its own version.</p>
+        <div class="selection-actions"><strong id="selectionLabel">No time range selected</strong><button id="clearSelectionBtn" class="button" type="button" disabled>Clear selection</button></div>
+        <div id="segmentPlayList" class="segment-play-list"></div><button id="playAllSegmentsBtn" class="button button-dark" type="button" disabled>▶ Listen in order</button>
+        <div class="upload-tools"><label>Volume <input id="volumeControl" type="range" min="0" max="150" value="100" disabled><span id="volumeValue">100%</span></label><label>Speed <input id="speedControl" type="range" min="0.5" max="1.5" step="0.05" value="1" disabled><span id="speedValue">1.00×</span></label></div>
+        <p class="fine-print">Volume and speed create unsaved edits for the next numbered version. Speed also changes pitch and duration.</p>
+
+      </section>
+      <section class="card versions-card"><div class="section-heading"><div><p class="eyebrow">WAV EXPORT</p><h2>Download each version</h2></div></div><div id="downloadList" class="download-list"></div></section>
+    </section>
+    <aside class="feedback-column">
+      <section class="card feedback-card"><p class="eyebrow">ORIGINAL COMPARISON</p><h2>Each version vs Original</h2><p class="fine-print">Edit-parameter agreement (%) · not detected melody similarity.</p><div id="similarityList" class="similarity-list" aria-label="Version scores relative to Original"></div><div id="partialComparison" class="partial-comparison"><h3>Selected segment vs Original</h3><p id="partialRange" class="fine-print">To see a segment score, drag across an empty area of the curve, or hold Shift and drag across a control point.</p><div id="partialSimilarityList" class="similarity-list" aria-label="Selected segment scores relative to Original"></div></div></section>
+    </aside>
+  </div>
+  <p id="status" class="status-line" role="status" aria-live="polite">Import a local audio file to begin.</p>
+  <footer><span>MelodyCompare · A2 interactive prototype</span><span>Local audio · saved versions · no pitch transcription</span></footer>
+</main>
+<script src="audio-engine.js"></script><script src="version-model.js"></script><script src="app.js"></script>
+</body></html>

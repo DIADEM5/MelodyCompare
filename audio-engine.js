@@ -159,5 +159,162 @@
     }
     return { sampleRate, channels, duration: frames / sampleRate };
   }
-  root.MelodyAudio = { clamp, beatSeconds, startSeconds, lengthSeconds, sameItem, compare, sliceCount, splitSource, editRange, render };
+
+  // Shared interpolation: this is a relative pitch-control envelope, not pitch detection.
+  function curveValue(points, time) {
+    if (!points.length) return 0;
+    if (time <= points[0].time) return points[0].value;
+    if (time >= points.at(-1).time) return points.at(-1).value;
+    let lo = 0, hi = points.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (points[mid].time <= time) lo = mid; else hi = mid; }
+    const a = points[lo], b = points[hi], u = (time - a.time) / (b.time - a.time), smooth = u * u * (3 - 2 * u);
+    return a.value + (b.value - a.value) * smooth;
+  }
+
+
+  // Align overlapping grains to the existing signal to reduce phase cancellation.
+  // This bounded waveform correlation is a basic time-domain aid, not a spectral model.
+  function grainOffset(base, output, weights, center, half, hop, ratio, sourceCenter, sampleRate) {
+    if (center === 0) return 0;
+    const from = Math.max(0, center - half + hop), to = Math.min(output.length - 1, center + half - hop);
+    if (to <= from) return 0;
+    const probes = [];
+    for (let q = 0; q < 32; q++) {
+      const at = Math.min(to, Math.round(from + (to - from) * q / 32) + q % 3);
+      if (weights[at] > 0.01) probes.push({ delta: at - center, value: output[at] / weights[at] });
+    }
+    if (probes.length < 12) return 0;
+    const radius = Math.min(Math.round(sampleRate * 0.015), Math.floor(half * 0.75)), step = Math.max(2, Math.round(sampleRate / 4000));
+    function score(offset) {
+      let dot = 0, a = 0, b = 0, count = 0;
+      for (const probe of probes) {
+        const at = sourceCenter + offset + probe.delta * ratio;
+        if (at < 0 || at >= base.length) continue;
+        const value = sampleAt(base, at, 0, base.length); dot += value * probe.value; a += value * value; b += probe.value * probe.value; count++;
+      }
+      return count >= 12 && a * b > 1e-12 ? dot / Math.sqrt(a * b) : -2;
+    }
+    let best = 0, strongest = score(0);
+    function tryOffset(offset) { const candidate = score(offset); if (candidate > strongest + 1e-6 || Math.abs(candidate - strongest) <= 1e-6 && Math.abs(offset) < Math.abs(best)) { best = offset; strongest = candidate; } }
+    for (let offset = -radius; offset <= radius; offset += step) tryOffset(offset);
+    const coarse = best;
+    for (let offset = Math.max(-radius, coarse - step); offset <= Math.min(radius, coarse + step); offset++) tryOffset(offset);
+    return best;
+  }
+
+  async function renderCurve(source, state, options = {}) {
+    abortIfNeeded(options);
+    const { segments, points, settings } = state;
+    const sampleRate = source.sampleRate, count = source.channels.length, speed = settings.speed;
+    if (!Number.isFinite(speed) || speed < 0.5 || speed > 1.5 || !Number.isFinite(settings.volume) || settings.volume < 0 || settings.volume > 150)
+      throw new Error("Invalid speed or volume.");
+    if (!segments.length || points.some((p, i) => !Number.isFinite(p.time) || !Number.isFinite(p.value) || Math.abs(p.value) > 12 || i && p.time <= points[i - 1].time))
+      throw new Error("Invalid pitch curve or source ranges.");
+    const cuts = segments.map(s => ({ from: Math.round(s.sourceStart * sampleRate), to: Math.round(s.sourceEnd * sampleRate) }));
+    if (cuts.some(s => s.from < 0 || s.to > source.channels[0].length || s.to <= s.from)) throw new Error("Invalid source range.");
+    const baseFrames = cuts.reduce((sum, s) => sum + s.to - s.from, 0), frames = Math.max(1, Math.round(baseFrames / speed));
+    if (frames / sampleRate > 600) throw new Error("The edited version is longer than 10 minutes.");
+    const base = Array.from({ length: count }, () => new Float32Array(baseFrames));
+    let offset = 0;
+    for (let index = 0; index < cuts.length; index++) {
+      const cut = cuts[index];
+      for (let c = 0; c < count; c++) base[c].set(source.channels[c].subarray(cut.from, cut.to), offset);
+      offset += cut.to - cut.from;
+    }
+    // A centered 20 ms splice crossfade preserves the output timeline length.
+    // It may use up to 10 ms of source context immediately outside a cut.
+    offset = 0;
+    for (let index = 1; index < cuts.length; index++) {
+      const previous = cuts[index - 1], next = cuts[index]; offset += previous.to - previous.from;
+      if (Math.abs(previous.to - next.from) <= 1) continue;
+      const half = Math.min(Math.round(sampleRate * 0.01), Math.floor((previous.to - previous.from) / 4), Math.floor((next.to - next.from) / 4));
+      for (let k = -half; k < half; k++) {
+        const u = (k + half) / Math.max(1, 2 * half - 1), mix = u * u * (3 - 2 * u);
+        for (let c = 0; c < count; c++) {
+          const data = source.channels[c];
+          const left = sampleAt(data, clamp(previous.to + k, 0, data.length - 1), 0, data.length);
+          const right = sampleAt(data, clamp(next.from + k, 0, data.length - 1), 0, data.length);
+          base[c][offset + k] = left * (1 - mix) + right * mix;
+        }
+      }
+    }
+    const channels = Array.from({ length: count }, () => new Float32Array(frames));
+    const active = points.some(p => Math.abs(p.value) > 0.000001);
+    if (!active) {
+      for (let c = 0; c < count; c++) for (let i = 0; i < frames; i++) {
+        channels[c][i] = sampleAt(base[c], i * speed, 0, baseFrames);
+        if ((i & 32767) === 32767) { await yieldTask(); abortIfNeeded(options); }
+      }
+    } else {
+      // One continuous overlap-add stream for the entire arrangement. No grain,
+      // envelope or phase is restarted at a control point or old slice boundary.
+      const grain = Math.min(2048, Math.max(128, 2 ** Math.round(Math.log2(sampleRate * 0.046))));
+      const half = grain / 2, hop = grain / 4, weights = new Float32Array(frames);
+      const window = Float32Array.from({ length: grain }, (_, k) => 0.5 - 0.5 * Math.cos(2 * Math.PI * k / (grain - 1)));
+      let guide = 0, guideEnergy = -1;
+      for (let c = 0; c < count; c++) { let energy = 0; for (let i = 0; i < baseFrames; i += Math.max(1, Math.floor(baseFrames / 256))) energy += base[c][i] ** 2; if (energy > guideEnergy) { guide = c; guideEnergy = energy; } }
+      // Only control intervals with a nonzero adjustment need granular rendering.
+      // Zero intervals copy the source directly, even when another point is edited.
+      const activeRanges = [];
+      function addRange(start, end) {
+        start = Math.max(0, Math.floor(start)); end = Math.min(frames, Math.ceil(end));
+        if (end <= start) return;
+        const previous = activeRanges.at(-1);
+        if (previous && start <= previous.end) previous.end = Math.max(previous.end, end);
+        else activeRanges.push({ start, end });
+      }
+      if (Math.abs(points[0].value) > 0.000001) addRange(0, points[0].time / speed * sampleRate);
+      for (let i = 1; i < points.length; i++) {
+        if (Math.abs(points[i - 1].value) > 0.000001 || Math.abs(points[i].value) > 0.000001)
+          addRange(points[i - 1].time / speed * sampleRate, points[i].time / speed * sampleRate);
+      }
+      if (Math.abs(points.at(-1).value) > 0.000001) addRange(points.at(-1).time / speed * sampleRate, frames);
+      const grainRanges = [];
+      for (const range of activeRanges) {
+        const first = Math.max(0, Math.floor((range.start - half) / hop) * hop);
+        const last = Math.min(frames + half, Math.ceil((range.end + half) / hop) * hop);
+        const previous = grainRanges.at(-1);
+        if (previous && first <= previous.end + hop) previous.end = Math.max(previous.end, last);
+        else grainRanges.push({ start: first, end: last });
+      }
+      const totalGrains = grainRanges.reduce((sum, range) => sum + Math.floor((range.end - range.start) / hop) + 1, 0);
+      let iteration = 0;
+      for (const range of grainRanges) for (let center = range.start; center <= range.end; center += hop) {
+        const ratio = speed * 2 ** (curveValue(points, center * speed / sampleRate) / 12);
+        const sourceCenter = center * speed + grainOffset(base[guide], channels[guide], weights, center, half, hop, ratio, center * speed, sampleRate);
+        for (let k = 0; k < grain; k++) {
+          const target = center + k - half, at = sourceCenter + (k - half) * ratio;
+          if (target < 0 || target >= frames || at < 0 || at >= baseFrames) continue;
+          const weight = window[k]; weights[target] += weight;
+          for (let c = 0; c < count; c++) channels[c][target] += sampleAt(base[c], at, 0, baseFrames) * weight;
+        }
+        if (++iteration % 32 === 0) { options.progress?.(Math.min(1, iteration / totalGrains)); await yieldTask(); abortIfNeeded(options); }
+      }
+      let interval = 0;
+      for (let i = 0; i < frames; i++) {
+        while (interval < activeRanges.length && i >= activeRanges[interval].end) interval++;
+        const adjusted = interval < activeRanges.length && i >= activeRanges[interval].start;
+        const amount = adjusted ? Math.min(1, Math.abs(curveValue(points, i * speed / sampleRate)) / 0.25) : 0;
+        const wet = amount * amount * (3 - 2 * amount);
+        for (let c = 0; c < count; c++) {
+          const dry = sampleAt(base[c], i * speed, 0, baseFrames);
+          const shifted = weights[i] > 0.000001 ? channels[c][i] / weights[i] : dry;
+          channels[c][i] = shifted * wet + dry * (1 - wet);
+        }
+        if ((i & 32767) === 32767) { await yieldTask(); abortIfNeeded(options); }
+      }
+    }
+    abortIfNeeded(options);
+    for (const data of channels) for (let i = 0; i < frames; i++) {
+      let gain = settings.volume / 100;
+      if (settings.fadeIn) gain *= Math.min(1, i / Math.min(frames, 2 * sampleRate));
+      if (settings.fadeOut) gain *= Math.min(1, (frames - 1 - i) / Math.min(frames, 2 * sampleRate));
+      data[i] = clamp(data[i] * gain, -1, 1);
+      if ((i & 32767) === 32767) { await yieldTask(); abortIfNeeded(options); }
+    }
+    options.progress?.(1);
+    return { sampleRate, channels, duration: frames / sampleRate };
+  }
+
+  root.MelodyAudio = { clamp, beatSeconds, startSeconds, lengthSeconds, sameItem, compare, sliceCount, splitSource, editRange, render, curveValue, renderCurve };
 })(globalThis);
