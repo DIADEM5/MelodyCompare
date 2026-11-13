@@ -1,5 +1,5 @@
 "use strict";
-/* Serializable editing state and append-only version history. No audio transcription. */
+/* Serializable editing state and independently editable numbered versions. No audio transcription. */
 (function (root) {
   const Audio = root.MelodyAudio;
   const clone = value => JSON.parse(JSON.stringify(value));
@@ -105,8 +105,9 @@
     }
     get(id) { return this.versions.find(v => v.id === id); }
     dirty() { return !equal(this.working, this.get(this.baseId).state); }
-    snapshot() { return { state: clone(this.working), baseId: this.baseId }; }
-    checkpoint() { this.undoStack.push(this.snapshot()); if (this.undoStack.length > 40) this.undoStack.shift(); this.redoStack = []; }
+    snapshot(versionId = null) { return { state: clone(this.working), baseId: this.baseId,
+      versionId, versionState: versionId ? clone(this.get(versionId).state) : null }; }
+    checkpoint(versionId = null) { this.undoStack.push(this.snapshot(versionId)); if (this.undoStack.length > 40) this.undoStack.shift(); this.redoStack = []; }
     apply(state, action) {
       validate(state); if (equal(this.working, state)) return false;
       const detail = changes(this.working, state); this.checkpoint(); this.working = clone(state);
@@ -119,12 +120,43 @@
         changes: changes(this.get(parentId).state, this.working), state: clone(this.working) });
       this.versions.push(version); this.baseId = version.id; this.events.push({ action: reason, versionId: version.id, detail: version.changes, time: this.now() }); return version;
     }
+    replaceState(id, state) {
+      const index = this.versions.findIndex(version => version.id === id);
+      if (index < 0 || id === "original") throw new Error("Only a saved numbered version can be edited.");
+      const previous = this.versions[index];
+      this.versions[index] = freeze({ ...previous, state: clone(state), changes: changes(this.get("original").state, state) });
+      return this.versions[index];
+    }
+    amend(id, state, action) {
+      validate(state);
+      const previous = this.get(id);
+      if (!previous || id === "original") throw new Error("Only a saved numbered version can be edited.");
+      if (equal(previous.state, state)) return false;
+      if (this.dirty()) throw new Error("Save the current unsaved edit before editing another version.");
+      if (this.baseId !== id) this.checkout(id);
+      this.checkpoint(id); this.replaceState(id, state); this.working = clone(state);
+      this.events.push({ action, versionId: id, detail: changes(previous.state, state), time: this.now() }); return true;
+    }
     checkout(id) {
       const target = this.get(id); if (!target) throw new Error("Version not found.");
       if (this.baseId === id && !this.dirty()) return target;
       this.checkpoint(); this.working = clone(target.state); this.baseId = id;
       this.events.push({ action: "Edit copy of " + target.name, detail: [], time: this.now() });
       return target;
+    }
+    remove(id) {
+      if (id === "original") throw new Error("Original cannot be deleted.");
+      const index = this.versions.findIndex(version => version.id === id);
+      if (index < 0) throw new Error("Version not found.");
+      const wasDirty = this.dirty(), [removed] = this.versions.splice(index, 1);
+      if (this.baseId === id) {
+        this.baseId = "original";
+        if (!wasDirty) this.working = clone(this.get("original").state);
+      }
+      this.undoStack = this.undoStack.filter(snapshot => snapshot.baseId !== id && snapshot.versionId !== id);
+      this.redoStack = this.redoStack.filter(snapshot => snapshot.baseId !== id && snapshot.versionId !== id);
+      this.events.push({ action: "Deleted " + removed.name, versionId: id, detail: [], time: this.now() });
+      return removed;
     }
     restore(id) {
       const target = this.get(id); if (!target) throw new Error("Version not found.");
@@ -133,12 +165,16 @@
     }
     undo() {
       if (!this.undoStack.length) return false;
-      this.redoStack.push(this.snapshot()); const saved = this.undoStack.pop(); this.working = clone(saved.state); this.baseId = saved.baseId;
+      const saved = this.undoStack.pop(); this.redoStack.push(this.snapshot(saved.versionId));
+      if (saved.versionId) this.replaceState(saved.versionId, saved.versionState);
+      this.working = clone(saved.state); this.baseId = saved.baseId;
       this.events.push({ action: "Undo", detail: [], time: this.now() }); return true;
     }
     redo() {
       if (!this.redoStack.length) return false;
-      this.undoStack.push(this.snapshot()); const saved = this.redoStack.pop(); this.working = clone(saved.state); this.baseId = saved.baseId;
+      const saved = this.redoStack.pop(); this.undoStack.push(this.snapshot(saved.versionId));
+      if (saved.versionId) this.replaceState(saved.versionId, saved.versionState);
+      this.working = clone(saved.state); this.baseId = saved.baseId;
       this.events.push({ action: "Redo", detail: [], time: this.now() }); return true;
     }
   }

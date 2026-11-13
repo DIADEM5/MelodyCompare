@@ -1,0 +1,306 @@
+{
+  "date": "2026-11-12",
+  "method": "Saved node:test bodies executed using Node VM registration harness and bundled runtime",
+  "total": 56,
+  "passed": 56,
+  "groups": {
+    "audio-engine.test.cjs": 12,
+    "version-model.test.cjs": 17,
+    "editor-state.test.cjs": 27
+  },
+  "performanceObservation": {
+    "fixture": "8-second mono 44.1 kHz sine, one +2-semitone control point; Node VM on this machine",
+    "beforeLocalIntervalOptimizationMs": 2485,
+    "afterLocalIntervalAndCooperativeYieldMs": 479,
+    "otherObservation": "A 60-second mono local edit took about 2.2 seconds before the final cooperative-yield addition; no browser benchmark was performed."
+  },
+  "limitations": [
+    "Standard terminal launcher still fails with a Windows CET error; tests were run through a Node VM harness in the bundled runtime.",
+    "DOM, decodeAudioData and native media are simulated in controller tests.",
+    "Real WAV/MP3 browser decoding, physical dragging/layout, native event timing, external WAV playback, console errors and listening quality require manual checks.",
+    "Synthetic latency, frequency and discontinuity checks are not user or listening-study evidence.",
+    "No current runtime screenshots or participant test captured."
+  ],
+  "results": [
+    {
+      "file": "audio-engine.test.cjs",
+      "name": "unmodified imported slices preserve every sample in mono and stereo",
+      "pass": true
+    },
+    {
+      "file": "audio-engine.test.cjs",
+      "name": "relative octave transpose changes real sample pitch while retaining target duration",
+      "pass": true
+    },
+    {
+      "file": "audio-engine.test.cjs",
+      "name": "length edits change sample duration without replacing the recording with a synth",
+      "pass": true
+    },
+    {
+      "file": "audio-engine.test.cjs",
+      "name": "moving and deleting slices change the correct time regions",
+      "pass": true
+    },
+    {
+      "file": "audio-engine.test.cjs",
+      "name": "keep range trims actual source boundaries and shifts the kept samples to zero",
+      "pass": true
+    },
+    {
+      "file": "audio-engine.test.cjs",
+      "name": "remove range joins retained source audio in the exported arrangement",
+      "pass": true
+    },
+    {
+      "file": "audio-engine.test.cjs",
+      "name": "volume zero can be reversed and fades reach zero at the endpoints",
+      "pass": true
+    },
+    {
+      "file": "audio-engine.test.cjs",
+      "name": "speed affects actual audio duration and comparison timing",
+      "pass": true
+    },
+    {
+      "file": "audio-engine.test.cjs",
+      "name": "similarity counts pitch, timing, length, added and removed items transparently",
+      "pass": true
+    },
+    {
+      "file": "audio-engine.test.cjs",
+      "name": "cancelled renders stop and excessive arrangements produce a readable error",
+      "pass": true
+    },
+    {
+      "file": "audio-engine.test.cjs",
+      "name": "default imported subdivision is finer for short clips and no longer caps long music at 16 slices",
+      "pass": true
+    },
+    {
+      "file": "audio-engine.test.cjs",
+      "name": "finer default slices still reconstruct the original samples without gaps or overlaps",
+      "pass": true
+    },
+    {
+      "file": "version-model.test.cjs",
+      "name": "dense control data is relative adjustment with fixed endpoint coverage",
+      "pass": true
+    },
+    {
+      "file": "version-model.test.cjs",
+      "name": "shared smoothstep interpolation has exact endpoints and a smooth midpoint",
+      "pass": true
+    },
+    {
+      "file": "version-model.test.cjs",
+      "name": "saved versions deeply freeze real state and use unique names and colors",
+      "pass": true
+    },
+    {
+      "file": "version-model.test.cjs",
+      "name": "restore adds a new node while undo redo and branching preserve all versions",
+      "pass": true
+    },
+    {
+      "file": "version-model.test.cjs",
+      "name": "undo capacity is independent of append-only saved history",
+      "pass": true
+    },
+    {
+      "file": "version-model.test.cjs",
+      "name": "parameter agreement locates pitch edits and also detects source timing volume and speed",
+      "pass": true
+    },
+    {
+      "file": "version-model.test.cjs",
+      "name": "selected-time comparison only measures the requested interval",
+      "pass": true
+    },
+    {
+      "file": "version-model.test.cjs",
+      "name": "range edits retain source mappings and remap real pitch controls",
+      "pass": true
+    },
+    {
+      "file": "version-model.test.cjs",
+      "name": "continuous renderer preserves exact untouched mono and stereo samples even with many controls",
+      "pass": true
+    },
+    {
+      "file": "version-model.test.cjs",
+      "name": "a local control edit changes real PCM while preserving original samples and distant unedited audio",
+      "pass": true
+    },
+    {
+      "file": "version-model.test.cjs",
+      "name": "one overlap-add stream avoids artificial per-slice amplitude restarts on a constant fixture",
+      "pass": true
+    },
+    {
+      "file": "version-model.test.cjs",
+      "name": "splice crossfade reduces a constructed cut discontinuity while preserving length",
+      "pass": true
+    },
+    {
+      "file": "version-model.test.cjs",
+      "name": "continuous renderer applies speed volume fades and cancellation to actual output",
+      "pass": true
+    },
+    {
+      "file": "version-model.test.cjs",
+      "name": "common playback windows use actual stereo samples and silence-pad a shorter version",
+      "pass": true
+    },
+    {
+      "file": "version-model.test.cjs",
+      "name": "a constant octave control shifts the dominant sine frequency to approximately 880 Hz",
+      "pass": true
+    },
+    {
+      "file": "version-model.test.cjs",
+      "name": "checking out an earlier snapshot and explicitly adding a version preserves both",
+      "pass": true
+    },
+    {
+      "file": "version-model.test.cjs",
+      "name": "long flat renders yield and honor cancellation after processing begins",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "simplified English UI has version picker, score data, segment listening and separate downloads",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "WAV and MP3 import routes keep immutable Original and its 100 percent row",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "dragging a curve point changes actual PCM but not imported Original",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "Add version saves independent states and the picker controls matching audio",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "dragging an older curve starts from Original without changing snapshots",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "each displayed comparison value uses Original as its fixed reference",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "drag selection offers each version for the same real PCM segment",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "Listen in order advances across numbered versions and Pause cancels",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "changing a saved version starts an Original-based draft",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "Undo and Redo preserve saved versions and immutable Original",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "visible volume and speed controls change real audio and Undo restores prior settings",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "per-version download writes processed WAV bytes and keeps Original separate",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "long imports remain inside contained pan and zoom view",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "import limits and read errors preserve the previous source and versions",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "obsolete rendering cannot overwrite a newly imported recording",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "render failure disables the affected draft download and Undo can recover",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "audio cache eviction retains every reconstructible snapshot",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "clicking a draft point without moving does not change audio or save a node",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "selected segment remains available while switching between saved versions",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "Add version starts from Original even after choosing an older saved version",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "editing and segment tools stay visible and empty comparison explains selection",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "Selected-segment percentages use only the chosen time span",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "Shift-drag selects a range across a pitch point without changing audio",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "dragging an empty curve area boxes a segment without editing audio",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "a real Blob import uses the original file for native playback but exports PCM WAV",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "replaying an unchanged saved version reuses its encoded WAV Blob",
+      "pass": true
+    },
+    {
+      "file": "editor-state.test.cjs",
+      "name": "draft score is computed once until its state changes",
+      "pass": true
+    }
+  ]
+}

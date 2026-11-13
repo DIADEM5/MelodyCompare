@@ -30,3 +30,6 @@
 #wholePanel{margin-top:10px}
 .partial-comparison{border:1px solid var(--line);border-radius:8px;background:#f9fbfb;margin-top:17px;padding:12px}
 .partial-comparison h3{font-size:13px;margin:0 0 6px}
+
+.button-danger{background:#fff7f6;color:#a9342e;border-color:#e3b3ae}
+.button-danger:hover:not(:disabled){background:#ffece9;border-color:#cf827c}

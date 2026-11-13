@@ -4,10 +4,11 @@ const Engine = window.MelodyAudio, Versions = window.MelodyVersions;
 const clamp = Engine.clamp;
 const AudioContextClass = window.AudioContext || window.webkitAudioContext;
 let audioContext = null, history = null, source = null, originalBuffer = null, workingBuffer = null;
-let sessionName = "", sessionEpoch = 0, loadingToken = 0, renderToken = 0, rendering = false, workingRender = null, renderedSignature = "";
+let sessionName = "", sessionEpoch = 0, loadingToken = 0, renderToken = 0, rendering = false, workingRender = null, renderedSignature = "", savingVersion = false;
 let selectedVersionId = "original", selectedPointId = null;
 let activeSelection = null, viewOffset = 0, autoFollow = true, dragState = null, draftPreview = null;
-let playbackToken = 0, playbackOffset = 0, playbackProgress = 0, playingId = null, preparedId = null, activeAudioUrl = null, originalFileUrl = null, sequentialNext = null;
+let playbackToken = 0, playbackOffset = 0, playbackProgress = 0, playingId = null, preparedId = null, activeAudioUrl = null, originalFileUrl = null;
+let sequencePlan = null, sequencePreparing = false;
 const audioCache = new Map(), pendingRenders = new Map(), scoreCache = new Map(), wavBlobCache = new Map();
 let currentComparison = null, draftScoreState = null, draftScoreResult = null, draftEntityCache = null;
 let partialScoreKey = "", partialScoreResults = new Map();
@@ -23,7 +24,10 @@ const workingState = () => draftPreview || history?.working;
 const signature = state => JSON.stringify(state);
 function entity(id) {
   if (!history) return null;
-  if (id !== "draft") return history.get(id);
+  if (id !== "draft") {
+    const saved = history.get(id);
+    return saved && draftPreview && dragState?.selected === id ? { ...saved, state: draftPreview } : saved;
+  }
   const state = workingState();
   if (draftEntityCache?.history === history && draftEntityCache.state === state && draftEntityCache.parentId === history.baseId && draftEntityCache.number === history.nextVersion) return draftEntityCache.item;
   const item = { id: "draft", name: "Version " + history.nextVersion + " (unsaved)", color: Versions.color(history.nextVersion), state,
@@ -34,7 +38,8 @@ function entity(id) {
 }
 function showDraft() { return Boolean(history && (selectedVersionId === "draft" || history.dirty())); }
 function entities() { return history ? showDraft() ? [...history.versions, entity("draft")] : history.versions : []; }
-function curveEntities() { return history ? showDraft() ? [...history.versions, { id: "draft", color: Versions.color(history.nextVersion), state: workingState() }] : history.versions : []; }
+function curveEntities() { if (!history) return []; const saved = history.versions.map(item => entity(item.id));
+  return showDraft() ? [...saved, { id: "draft", color: Versions.color(history.nextVersion), state: workingState() }] : saved; }
 function editable() { return Boolean(history && selectedVersionId === "draft"); }
 function colorButton(button, color) { button.style.backgroundColor = color; button.style.borderColor = color; button.style.color = "#fff"; }
 function bufferFromRendered(rendered) {
@@ -64,7 +69,7 @@ function cacheAudio(id, buffer) {
   while (audioCache.size > 3) audioCache.delete(audioCache.keys().next().value);
 }
 function stopPlayback() {
-  ++playbackToken; sequentialNext = null; $("audioPlayer").pause();
+  ++playbackToken; sequencePlan = null; sequencePreparing = false; $("audioPlayer").pause();
   $("audioPlayer").removeAttribute("src"); $("audioPlayer").load();
   if (activeAudioUrl) URL.revokeObjectURL(activeAudioUrl);
   activeAudioUrl = null; playingId = null; preparedId = null;
@@ -121,8 +126,10 @@ async function getBuffer(id) {
   if (pendingRenders.has(id)) return pendingRenders.get(id);
   const version = history.get(id); if (!version) throw new Error("Saved version not found.");
   const epoch = sessionEpoch, activeSource = source;
-  const promise = Engine.renderCurve(activeSource, version.state, { cancelled: () => epoch !== sessionEpoch }).then(result => {
+  const state = version.state;
+  const promise = Engine.renderCurve(activeSource, state, { cancelled: () => epoch !== sessionEpoch || history?.get(id)?.state !== state }).then(result => {
     if (epoch !== sessionEpoch) throw new Error("The audio source changed.");
+    if (history?.get(id)?.state !== state) throw new Error("The version changed during audio rendering. Try playback again.");
     const buffer = bufferFromRendered(result); cacheAudio(id, buffer); return buffer;
   });
   pendingRenders.set(id, promise);
@@ -151,7 +158,7 @@ async function loadFile(file) {
     workingBuffer = decoded; renderedSignature = signature(history.working); currentComparison = null;
     $("dropZone").classList.add("hidden"); $("loadedFile").classList.remove("hidden"); $("replaceFileBtn").classList.remove("hidden");
     $("fileName").textContent = file.name; $("fileInfo").textContent = precise(decoded.duration) + " · " + decoded.numberOfChannels + " channels · " + (decoded.sampleRate / 1000).toFixed(1) + " kHz";
-    if (originalFileUrl) prepareBuffer(decoded, "original"); else { $("trackStart").textContent = "00:00"; $("trackEnd").textContent = timeLabel(decoded.duration); } renderUI(); tell("Audio imported. Drag a curve point or select a segment, then add a version. Original stays unchanged."); return true;
+    if (originalFileUrl) prepareBuffer(decoded, "original"); else { $("trackStart").textContent = "00:00"; $("trackEnd").textContent = timeLabel(decoded.duration); } renderUI(); tell("Audio imported. Add a version to edit it directly. Original stays unchanged."); return true;
   } catch (error) { if (token === loadingToken) tell("Could not read this audio. Try a valid WAV or MP3. " + error.message); return false; }
 }
 $("audioFile").addEventListener("change", event => { loadFile(event.target.files?.[0]); event.target.value = ""; });
@@ -164,7 +171,7 @@ $("dropZone").addEventListener("dragleave", () => $("dropZone").classList.remove
 $("dropZone").addEventListener("drop", event => { event.preventDefault(); $("dropZone").classList.remove("dragging"); loadFile(event.dataTransfer.files?.[0]); });
 function selectVersion(id) {
   if (!entity(id)) return;
-  if (selectedVersionId !== id && preparedId) stopPlayback();
+  if (selectedVersionId !== id && (preparedId || sequencePreparing)) stopPlayback();
   selectedVersionId = id; selectedPointId = null; renderUI();
 }
 function versionVisible(item) { return Boolean(item); }
@@ -189,7 +196,7 @@ function renderDownloads() {
     const row = document.createElement("div"); row.className = "download-row"; row.style.setProperty("--version-color",item.color);
     const name = document.createElement("span"); name.textContent = item.name;
     const button = makeButton("↓ Download WAV", () => downloadVersion(item.id), "button download-version");
-    button.dataset.versionId = item.id; button.disabled = item.id === "draft" && (rendering || !workingBuffer); colorButton(button,item.color);
+    button.dataset.versionId = item.id; button.disabled = rendering || item.id === "draft" && !workingBuffer; colorButton(button,item.color);
     row.append(name,button); $("downloadList").append(row);
   }
 }
@@ -230,21 +237,23 @@ function segmentRange() {
 }
 function renderSegmentButtons() {
   $("segmentPlayList").replaceChildren();
-  const range = segmentRange(); $("playAllSegmentsBtn").disabled = !history || !range || rendering;
+  const range = segmentRange(); $("playAllSegmentsBtn").disabled = !history || !range || rendering || sequencePreparing;
   if (!history || !range) return;
   for (const item of entities()) {
     const button = makeButton("▶ " + item.name, () => playVersion(item.id,range), "button version-play");
-    button.dataset.versionId = item.id; colorButton(button,item.color); button.disabled = item.id === "draft" && rendering;
+    button.dataset.versionId = item.id; colorButton(button,item.color); button.disabled = rendering;
     $("segmentPlayList").append(button);
   }
 }
 function renderUI() {
-  const loaded = Boolean(history), canEdit = editable() && !rendering && !draftPreview;
+  const loaded = Boolean(history), canEdit = loaded && selectedVersionId !== "original" && !rendering && !draftPreview;
   $("emptyState").classList.toggle("hidden", loaded);
   if (!rendering) $("sourceStatus").textContent = loaded ? (history.versions.length - 1) + " saved versions · " + history.working.points.length + " control points" : "Waiting for audio";
-  $("playSelectedBtn").disabled = !loaded || selectedVersionId === "draft" && rendering;
+  $("playSelectedBtn").disabled = !loaded || rendering;
   $("pausePlaybackBtn").disabled = !loaded || $("audioPlayer").paused;
-  $("saveVersionBtn").disabled = !loaded || rendering || Boolean(draftPreview);
+  $("saveVersionBtn").disabled = !loaded || savingVersion || Boolean(dragState) || Boolean(draftPreview);
+  $("saveVersionBtn").textContent = savingVersion ? "Saving…" : "＋ Add version";
+  $("deleteVersionBtn").disabled = !loaded || rendering || selectedVersionId === "original" || selectedVersionId === "draft";
   $("undoBtn").disabled = !loaded || !history.undoStack.length; $("redoBtn").disabled = !loaded || !history.redoStack.length;
   $("seekControl").disabled = !loaded; $("zoomControl").disabled = !loaded;
   const range = Boolean(segmentRange());
@@ -253,7 +262,7 @@ function renderUI() {
   const point = loaded && entity(selectedVersionId).state.points.find(p => p.id === selectedPointId);
   $("pitchControl").disabled = !point || !canEdit; $("resetPointBtn").disabled = !point || !canEdit;
   $("pitchControl").value = point?.value || 0; $("pitchValue").textContent = pitchText(point?.value || 0);
-  $("selectedPointLabel").textContent = point ? precise(point.time / history.working.settings.speed) + " · " + pitchText(point.value) : loaded ? "Click or drag a curve point" : "No point selected";
+  $("selectedPointLabel").textContent = point ? precise(point.time / entity(selectedVersionId).state.settings.speed) + " · " + pitchText(point.value) : loaded ? "Click or drag a curve point" : "No point selected";
   for (const id of ["volumeControl","speedControl"]) $(id).disabled = !loaded || rendering;
   if (loaded) {
     const state = entity(selectedVersionId).state;
@@ -355,17 +364,20 @@ $("trackCanvas").addEventListener("pointerdown", event => {
   stopPlayback(); const g = geometry(), x = event.clientX - g.rect.left, y = event.clientY - g.rect.top;
   $("trackCanvas").setPointerCapture(event.pointerId);
   if (!event.shiftKey) {
-    const selectedState = entity(selectedVersionId).state;
-    const point = visiblePoints(selectedState, g).map(p => ({ point: p, distance: Math.hypot(g.left + (p.time / selectedState.settings.speed - g.offset) * g.px - x, g.y(p.value) - y) })).sort((a, b) => a.distance - b.distance)[0];
-    if (point && point.distance <= 9) {
-      if (!editable()) {
-        if (history.dirty()) { tell("Save the unsaved version before starting another edit."); return; }
-        history.checkout("original"); selectedVersionId = "draft"; workingBuffer = originalBuffer; renderedSignature = signature(history.working);
-      }
-      selectedPointId = history.working.points.reduce((nearest, item) => Math.abs(item.time - point.point.time / selectedState.settings.speed) < Math.abs(nearest.time - point.point.time / selectedState.settings.speed) ? item : nearest).id;
-      const index = history.working.points.findIndex(p => p.id === selectedPointId), points = history.working.points;
-      activeSelection = { start: (points[Math.max(0, index - 1)].time) / history.working.settings.speed, end: points[Math.min(points.length - 1, index + 1)].time / history.working.settings.speed };
-      dragState = { type: "point", g, y, index, before: Versions.clone(history.working), value: points[index].value, selected: selectedVersionId };
+    const selectedState = entity(selectedVersionId).state, time = pointerTime(event, g);
+    const at = firstPointAt(selectedState.points, time * selectedState.settings.speed);
+    const point = [selectedState.points[Math.max(0, at - 1)], selectedState.points[Math.min(selectedState.points.length - 1, at)]]
+      .filter(Boolean).sort((a, b) => Math.abs(a.time / selectedState.settings.speed - time) - Math.abs(b.time / selectedState.settings.speed - time))[0];
+    const onSelectedCurve = x >= g.left && x <= g.left + g.width && time <= Versions.duration(selectedState) && point && Math.abs(g.y(Engine.curveValue(selectedState.points, time * selectedState.settings.speed)) - y) <= 11;
+    if (onSelectedCurve) {
+      if (!editable() && history.dirty()) { tell("Save the unsaved version before starting another edit."); return; }
+      const editState = selectedVersionId === "draft" ? history.working : selectedState;
+      const editTime = point.time / selectedState.settings.speed * editState.settings.speed;
+      const closest = editState.points.reduce((nearest, item) => Math.abs(item.time - editTime) < Math.abs(nearest.time - editTime) ? item : nearest);
+      selectedPointId = point.id;
+      const index = editState.points.findIndex(p => p.id === closest.id), points = editState.points;
+      activeSelection = { start: points[Math.max(0, index - 1)].time / editState.settings.speed, end: points[Math.min(points.length - 1, index + 1)].time / editState.settings.speed };
+      dragState = { type: "point", g, y, index, before: Versions.clone(editState), value: point.value, selected: selectedVersionId };
       renderUI(); return;
     }
   }
@@ -382,7 +394,7 @@ $("trackCanvas").addEventListener("pointermove", event => {
   const value = Engine.clamp(Math.round((dragState.value - (event.clientY - dragState.g.rect.top - dragState.y) * 24 / dragState.g.height) * 4) / 4, -12, 12);
   if (value === dragState.value && !draftPreview) return;
   if (!draftPreview) draftPreview = Versions.clone(dragState.before); draftPreview.points[dragState.index].value = value;
-  selectedVersionId = "draft";
+    selectedVersionId = dragState.selected === "original" ? "draft" : dragState.selected;
   $("pitchValue").textContent = pitchText(value); $("pitchControl").value = value; $("selectedPointLabel").textContent = "Preview · " + pitchText(value);
   $("saveVersionBtn").disabled = true; drawTrack();
 });
@@ -390,7 +402,14 @@ $("trackCanvas").addEventListener("pointerup", async () => {
   const drag = dragState; dragState = null;
   if (drag?.type === "point") {
     const next = draftPreview; draftPreview = null;
-    if (next && history.apply(next, "Drag pitch control point")) { renderUI(); if (await renderWorking()) tell("Pitch adjustment applied to the working audio. Save version to keep an independent snapshot."); }
+    if (next && drag.selected === "original" && !Versions.equal(next, history.get("original").state)) {
+      history.checkout("original"); selectedVersionId = "draft"; selectedPointId = history.working.points[drag.index].id;
+      workingBuffer = originalBuffer; renderedSignature = signature(history.working);
+    }
+    if (next && drag.selected !== "draft" && drag.selected !== "original") {
+      try { if (!await applySaved(drag.selected, next, "Drag pitch control point")) renderUI(); }
+      catch (error) { tell(error.message); renderUI(); }
+    } else if (next && selectedVersionId === "draft" && history.apply(next, "Drag pitch control point")) { renderUI(); if (await renderWorking()) tell("Pitch adjustment applied. Add version to save it."); }
     else renderUI();
   } else if (drag?.type === "range") { if (!activeSelection || activeSelection.end - activeSelection.start < 0.025) activeSelection = null; renderUI(); }
 });
@@ -404,19 +423,42 @@ async function applyWorking(next, action) {
   selectedVersionId = "draft";
   renderUI(); return renderWorking();
 }
+async function applySaved(id, next, action) {
+  if (!history || !history.amend(id, next, action)) return false;
+  selectedVersionId = id; draftPreview = null;
+  audioCache.delete(id); pendingRenders.delete(id); scoreCache.delete(id); wavBlobCache.delete(id); partialScoreResults.delete(id);
+  renderUI();
+  const done = await renderWorking();
+  if (done && history?.get(id)?.state && renderedSignature === signature(history.get(id).state)) {
+    cacheAudio(id, workingBuffer); tell(history.get(id).name + " updated and saved automatically.");
+  }
+  return done;
+}
 $("pitchControl").addEventListener("input", event => { $("pitchValue").textContent = pitchText(Number(event.target.value)); });
 $("pitchControl").addEventListener("change", async event => {
   if (!history || selectedPointId === null) return;
-  const next = Versions.clone(history.working); next.points.find(p => p.id === selectedPointId).value = Number(event.target.value);
-  try { await applyWorking(next, "Set point pitch adjustment"); } catch (error) { tell(error.message); }
+  if (Number(event.target.value) === entity(selectedVersionId).state.points.find(point => point.id === selectedPointId)?.value) return;
+  const id = selectedVersionId, next = Versions.clone(entity(id).state);
+  next.points.find(p => p.id === selectedPointId).value = Number(event.target.value);
+  try { if (!await (id === "draft" ? applyWorking(next, "Set point pitch adjustment") : applySaved(id, next, "Set point pitch adjustment"))) renderUI(); }
+  catch (error) { tell(error.message); renderUI(); }
 });
 $("resetPointBtn").addEventListener("click", async () => {
   if (!history || selectedPointId === null) return;
-  const next = Versions.clone(history.working); next.points.find(p => p.id === selectedPointId).value = 0; await applyWorking(next, "Reset point");
+  const id = selectedVersionId, next = Versions.clone(entity(id).state);
+  next.points.find(p => p.id === selectedPointId).value = 0;
+  try { if (!await (id === "draft" ? applyWorking(next, "Reset point") : applySaved(id, next, "Reset point"))) renderUI(); }
+  catch (error) { tell(error.message); renderUI(); }
 });
 $("clearSelectionBtn").addEventListener("click", () => { activeSelection = null; renderUI(); });
 async function setting(key, value) {
   if (!history || entity(selectedVersionId).state.settings[key] === value) return;
+  if (selectedVersionId !== "draft" && selectedVersionId !== "original") {
+    const id = selectedVersionId, state = Versions.clone(entity(id).state); state.settings[key] = value;
+    try { if (!await applySaved(id, state, "Change " + key)) renderUI(); }
+    catch (error) { renderUI(); tell(error.message); }
+    return;
+  }
   if (selectedVersionId !== "draft") {
     if (history.dirty()) { renderUI(); tell("Save the unsaved version before starting another edit."); return; }
     stopPlayback(); history.checkout("original"); selectedVersionId = "draft"; selectedPointId = null;
@@ -430,58 +472,137 @@ $("volumeControl").addEventListener("change", event => setting("volume", Number(
 $("speedControl").addEventListener("input", event => { $("speedValue").textContent = Number(event.target.value).toFixed(2) + "×"; });
 $("speedControl").addEventListener("change", event => setting("speed", Number(event.target.value)));
 async function saveVersion() {
-  if (!history || rendering) return null;
-  let saved = null;
-  if (selectedVersionId === "draft" || history.dirty()) {
-    if (!workingBuffer || renderedSignature !== signature(history.working)) { renderUI(); if (!await renderWorking()) return null; }
-    saved = history.save("Added version", null, history.baseId, true);
+  if (!history || savingVersion || dragState || draftPreview) return null;
+  const activeHistory = history, epoch = sessionEpoch;
+  savingVersion = true; renderUI();
+  try {
+    if (rendering && workingRender && !await workingRender) { tell("Audio rendering did not finish. The version was not saved; try Add version again."); return null; }
+    if (history !== activeHistory || epoch !== sessionEpoch) return null;
+    if (selectedVersionId === "draft" || history.dirty()) {
+      if (!workingBuffer || renderedSignature !== signature(history.working)) {
+        if (!await renderWorking()) { tell("Audio rendering failed. The version was not saved."); return null; }
+      }
+    } else {
+      stopPlayback(); history.checkout("original");
+      workingBuffer = originalBuffer; renderedSignature = signature(history.working);
+    }
+    if (history !== activeHistory || epoch !== sessionEpoch) return null;
+    const saved = history.save("Added version", null, history.baseId, true);
     if (workingBuffer) cacheAudio(saved.id, workingBuffer);
-  }
-  stopPlayback(); history.checkout("original"); selectedVersionId = "draft"; selectedPointId = null;
-  workingBuffer = originalBuffer; renderedSignature = signature(history.working);
-  renderUI(); tell((saved ? saved.name + " saved. " : "") + "Version " + history.nextVersion + " starts from Original."); return saved;
+    stopPlayback(); selectedVersionId = saved.id; selectedPointId = null;
+    renderUI(); tell(saved.name + " saved. Future new versions start from Original."); return saved;
+  } finally { savingVersion = false; renderUI(); }
 }
 $("saveVersionBtn").addEventListener("click", saveVersion);
-$("undoBtn").addEventListener("click", async () => { if (!history?.undo()) return; selectedVersionId = "draft"; selectedPointId = null; renderUI(); await renderWorking(); });
-$("redoBtn").addEventListener("click", async () => { if (!history?.redo()) return; selectedVersionId = "draft"; selectedPointId = null; renderUI(); await renderWorking(); });
+function deleteSelectedVersion() {
+  if (!history || rendering || selectedVersionId === "original" || selectedVersionId === "draft") return false;
+  const id = selectedVersionId, wasBase = history.baseId === id, wasDirty = history.dirty();
+  stopPlayback(); const removed = history.remove(id);
+  audioCache.delete(id); pendingRenders.delete(id); scoreCache.delete(id); wavBlobCache.delete(id); partialScoreResults.delete(id);
+  if (wasBase && !wasDirty) { workingBuffer = originalBuffer; renderedSignature = signature(history.working); }
+  selectedVersionId = history.dirty() ? "draft" : "original"; selectedPointId = null;
+  renderUI(); tell(removed.name + " deleted. Original and other saved versions remain available."); return true;
+}
+$("deleteVersionBtn").addEventListener("click", deleteSelectedVersion);
+async function navigateHistory(direction) {
+  if (!history?.[direction]()) return;
+  stopPlayback(); audioCache.clear(); pendingRenders.clear(); scoreCache.clear(); wavBlobCache.clear(); partialScoreResults.clear();
+  selectedVersionId = history.dirty() ? "draft" : history.baseId; selectedPointId = null;
+  renderUI(); await renderWorking();
+  if (selectedVersionId !== "draft" && selectedVersionId !== "original" && workingBuffer) cacheAudio(selectedVersionId, workingBuffer);
+}
+$("undoBtn").addEventListener("click", () => navigateHistory("undo"));
+$("redoBtn").addEventListener("click", () => navigateHistory("redo"));
 $("versionPicker").addEventListener("change", event => selectVersion(event.target.value));
 $("zoomControl").addEventListener("change", () => { autoFollow = false; drawTrack(); });
 $("trackPan").addEventListener("input", event => { autoFollow = false; const g = geometry(); viewOffset = g.maxOffset * Engine.clamp(Number(event.target.value) / 1000, 0, 1); drawTrack(); });
 for (const [id, direction] of [["panLeftBtn", -1], ["panRightBtn", 1]]) $(id).addEventListener("click", () => { const g = geometry(); autoFollow = false; viewOffset = Engine.clamp(g.offset + g.span * 0.8 * direction, 0, g.maxOffset); drawTrack(); });
-async function playVersion(id, range = null, next = null) {
+async function playVersion(id, range = null) {
   if (!entity(id)) return;
   const token = stopPlayback(), epoch = sessionEpoch;
   $("playbackLabel").textContent = "Preparing " + entity(id).name + "…";
   try {
     const buffer = await getBuffer(id); if (token !== playbackToken || epoch !== sessionEpoch) return;
-    prepareBuffer(buffer, id, range); selectedVersionId = id; playingId = id; sequentialNext = next?.length ? next : null; autoFollow = true;
-    $("playbackLabel").textContent = "Playing " + entity(id).name + (range ? " · " + precise(range.start) + "–" + precise(range.end) : " · full version") + (next?.length ? " · next version follows" : "");
+    prepareBuffer(buffer, id, range); selectedVersionId = id; playingId = id; autoFollow = true;
+    $("playbackLabel").textContent = "Playing " + entity(id).name + (range ? " · " + precise(range.start) + "–" + precise(range.end) : " · full version");
     renderUI(); await $("audioPlayer").play();
-  } catch (error) { if (token === playbackToken) { sequentialNext = null; tell("Playback failed: " + error.message + ". Try the native Play control or another file."); } }
+  } catch (error) { if (token === playbackToken) tell("Playback failed: " + error.message + ". Try the native Play control or another file."); }
 }
 $("playSelectedBtn").addEventListener("click", () => playVersion(selectedVersionId));
-$("pausePlaybackBtn").addEventListener("click", () => { $("audioPlayer").pause(); sequentialNext = null; $("playbackLabel").textContent = preparedId ? "Paused " + entity(preparedId).name : "Playback stopped"; renderUI(); });
-$("playAllSegmentsBtn").addEventListener("click", () => {
-  const range = segmentRange(); if (!range || !history) return;
-  const queue = entities().map(item => ({id:item.id,range})); const first = queue.shift();
-  return playVersion(first.id,first.range,queue);
-});
-$("audioPlayer").addEventListener("play", () => { if (preparedId) { selectedVersionId = preparedId; playingId = preparedId; autoFollow = true; renderUI(); } });
-$("audioPlayer").addEventListener("pause", () => { if ($("audioPlayer").paused && !$("audioPlayer").ended) { sequentialNext = null; if (preparedId) $("playbackLabel").textContent = "Paused " + entity(preparedId).name; } });
-$("audioPlayer").addEventListener("ended", () => { const queue = sequentialNext; sequentialNext = null; if (queue?.length) { const [next,...rest] = queue; return playVersion(next.id,next.range,rest); } $("playbackLabel").textContent = "Playback finished"; renderUI(); });
+$("pausePlaybackBtn").addEventListener("click", () => { $("audioPlayer").pause(); $("playbackLabel").textContent = preparedId ? "Paused " + entity(preparedId).name : "Playback stopped"; renderUI(); });
+async function playSequence(range) {
+  if (!history || !range || sequencePreparing) return;
+  const items = entities().map(item => ({ id: item.id, name: item.name }));
+  const token = stopPlayback(), epoch = sessionEpoch;
+  sequencePreparing = true; $("playbackLabel").textContent = "Preparing all selected segments…"; renderUI();
+  try {
+    const slices = [];
+    for (const item of items) {
+      const buffer = await getBuffer(item.id);
+      if (token !== playbackToken || epoch !== sessionEpoch) return;
+      slices.push(Versions.segment(buffer, range));
+    }
+    const sampleRate = slices[0].sampleRate, channels = Math.max(...slices.map(slice => slice.channels.length));
+    if (slices.some(slice => slice.sampleRate !== sampleRate)) throw new Error("Versions have different sample rates.");
+    const frames = slices.reduce((sum, slice) => sum + slice.channels[0].length, 0);
+    if (frames * channels * 4 > 96 * 1024 * 1024) throw new Error("Select a shorter segment for smooth sequential listening.");
+    const combined = context().createBuffer(channels, frames, sampleRate), plan = [];
+    let offset = 0;
+    for (let i = 0; i < slices.length; i++) {
+      const slice = slices[i], start = offset;
+      const edge = Math.min(Math.floor(sampleRate * 0.005), Math.floor(slice.channels[0].length / 4));
+      for (let channel = 0; channel < channels; channel++) {
+        const output = combined.getChannelData(channel), input = slice.channels[Math.min(channel, slice.channels.length - 1)];
+        output.set(input, offset);
+        for (let frame = 0; frame < edge; frame++) {
+          if (i > 0) output[offset + frame] *= frame / edge;
+          if (i < slices.length - 1) output[offset + input.length - 1 - frame] *= frame / edge;
+        }
+      }
+      offset += slice.channels[0].length;
+      plan.push({ id: items[i].id, name: items[i].name, start: start / sampleRate, end: offset / sampleRate });
+    }
+    if (token !== playbackToken || epoch !== sessionEpoch) return;
+    activeAudioUrl = URL.createObjectURL(encodeWav(combined));
+    sequencePlan = { items: plan, range };
+    sequencePreparing = false; preparedId = plan[0].id; playingId = preparedId; selectedVersionId = preparedId;
+    playbackOffset = range.start; playbackProgress = range.start; autoFollow = true;
+    $("audioPlayer").src = activeAudioUrl; $("audioPlayer").load();
+    $("trackStart").textContent = timeLabel(range.start); $("trackEnd").textContent = timeLabel(range.end);
+    $("playbackLabel").textContent = "Playing " + plan[0].name + " · " + precise(range.start) + "–" + precise(range.end);
+    renderUI(); await $("audioPlayer").play();
+  } catch (error) { if (token === playbackToken) tell("Sequential playback failed: " + error.message); }
+  finally { if (token === playbackToken && sequencePreparing) { sequencePreparing = false; renderUI(); } }
+}
+$("playAllSegmentsBtn").addEventListener("click", () => playSequence(segmentRange()));
+function updateSequencePosition() {
+  if (!sequencePlan) return;
+  const time = $("audioPlayer").currentTime;
+  const item = sequencePlan.items.find(entry => time < entry.end - 0.000001) || sequencePlan.items.at(-1);
+  playbackOffset = sequencePlan.range.start;
+  playbackProgress = sequencePlan.range.start + Math.max(0, Math.min(time - item.start, item.end - item.start));
+  if (preparedId !== item.id) {
+    preparedId = item.id; playingId = item.id; selectedVersionId = item.id;
+    $("playbackLabel").textContent = "Playing " + item.name + " · " + precise(sequencePlan.range.start) + "–" + precise(sequencePlan.range.end);
+    renderUI();
+  }
+}
+$("audioPlayer").addEventListener("play", () => { if (preparedId) { updateSequencePosition(); selectedVersionId = preparedId; playingId = preparedId; autoFollow = true; renderUI(); } });
+$("audioPlayer").addEventListener("pause", () => { if ($("audioPlayer").paused && !$("audioPlayer").ended && preparedId) $("playbackLabel").textContent = "Paused " + entity(preparedId).name; });
+$("audioPlayer").addEventListener("ended", () => { $("playbackLabel").textContent = "Playback finished"; renderUI(); });
 $("audioPlayer").addEventListener("timeupdate", () => {
-  playbackProgress = playbackOffset + $("audioPlayer").currentTime;
+  if (sequencePlan) updateSequencePosition(); else playbackProgress = playbackOffset + $("audioPlayer").currentTime;
   const duration = $("audioPlayer").duration || 0; $("seekControl").value = duration ? Math.round($("audioPlayer").currentTime / duration * 1000) : 0;
-  $("trackStart").textContent = timeLabel(playbackProgress); $("trackEnd").textContent = timeLabel(playbackOffset + duration);
+  $("trackStart").textContent = timeLabel(playbackProgress); $("trackEnd").textContent = timeLabel(sequencePlan ? sequencePlan.range.end : playbackOffset + duration);
   const g = geometry(); if (autoFollow && (playbackProgress < g.offset || playbackProgress > g.offset + g.span * 0.93)) viewOffset = Engine.clamp(playbackProgress - g.span * 0.2, 0, g.maxOffset); drawTrack();
 });
-$("audioPlayer").addEventListener("error", () => { sequentialNext = null; if ($("audioPlayer").getAttribute("src")) tell("Audio playback failed. Try a version Play button or another file."); });
-$("seekControl").addEventListener("input", event => { sequentialNext = null; autoFollow = true; if (Number.isFinite($("audioPlayer").duration)) $("audioPlayer").currentTime = $("audioPlayer").duration * Number(event.target.value) / 1000; });
+$("audioPlayer").addEventListener("error", () => { if ($("audioPlayer").getAttribute("src")) tell("Audio playback failed. Try a version Play button or another file."); });
+$("seekControl").addEventListener("input", event => { autoFollow = true; if (Number.isFinite($("audioPlayer").duration)) $("audioPlayer").currentTime = $("audioPlayer").duration * Number(event.target.value) / 1000; });
 async function downloadVersion(id) {
   if (!history || !entity(id)) return;
   const epoch = sessionEpoch, name = entity(id).name;
   try {
-    const buffer = await getBuffer(id); if (epoch !== sessionEpoch) return;
+    const buffer = await getBuffer(id); if (epoch !== sessionEpoch || id !== "draft" && !history?.get(id)) return;
     const url = URL.createObjectURL(wavBlob(id,buffer)), link = document.createElement("a"); link.href = url;
     link.download = sessionName.replace(/\.[^.]+$/, "") + "-" + name.toLowerCase().replace(/\s+/g, "-") + ".wav";
     document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url),1500);
