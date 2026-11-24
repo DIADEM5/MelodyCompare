@@ -80,17 +80,45 @@ to selected segments, and managing and exporting versions.
 
 ![MelodyCompare Interaction Storyboard](storyboard/storyboard-final.png)
 
+## Development Record
+
+The project was developed iteratively. The following decisions explain how the scope and interaction design changed in response to Assignment 1, tutor feedback and implementation experience.
+
+| Development stage | Student design decision and trade-off | Evidence |
+| --- | --- | --- |
+| Scope refinement | Narrow the initial music-generation concept, including simulated AI suggestions, to comparing edits of one imported recording. Prioritise real audio processing and a complete comparison workflow over automatic generation. | [Commit history](https://github.com/DIADEM5/MelodyCompare/commits/main/) and the design-evolution figure in the A2 report. |
+| Interaction redesign | Replace block-based editing with relative pitch curves and simplify A/B selection to a numbered version system with Original as the common reference. This reduces selection complexity but removes direct numerical comparison between arbitrary edited versions. | [Version model](version-model.js), [interface screenshots](screenshots/README.md). |
+| Comparison and listening | Combine whole-audio and selected-range edit-parameter agreement with corresponding segment playback. A high overall score can hide local changes; scores inform decisions rather than rank musical quality. | [Interface screenshots](screenshots/README.md), [controller and model tests](tests/). |
+| Technical refinement | Preserve unchanged audio samples and prepare sequential playback before starting the combined stream. This reduces unnecessary rendering and media reloads, but first-time preparation can still take time. | [Audio engine](audio-engine.js), [controller](app.js), and the synthetic benchmark described above. |
+| Functional verification | Check implemented behaviour using automated tests and manual browser checks rather than claim that usability or creative agency has been improved. | [Saved verification record](tests/verification-2026-11-13.json) and the manual checks described in Files and tests. |
+
+An earlier screenshot shows Version 1 with 99.4% whole-audio agreement and 73.9% agreement in the selected range of 0.16–4.37 seconds. This illustrates the difference between global and local feedback; it is not a perceptual similarity measurement or a user-study result.
+
 ## Development and Authorship
 
-MelodyCompare is an individual university project. I defined the project goals, decided the required features and interaction design, and specified the modifications needed for the application.
+MelodyCompare is an individual university project. I defined the project goals, selected the required features and interaction design, and specified the changes needed for the application.
 
-**AI Assistance Disclosure:** ChatGPT (OpenAI) was used to assist with modifying the program code according to my instructions and requirements. I determined which features should be added, modified or removed, while ChatGPT assisted with implementing those changes.
+### AI Assistance Disclosure
 
-ChatGPT also assisted with preparing the system architecture diagram and the interaction storyboard. AI image generation was used to create the storyboard illustration.
+ChatGPT (OpenAI) assisted with code implementation and modification, system architecture diagram creation, interaction storyboard production, and the identification and correction of spelling and grammatical errors.  AI image generation was used for explanatory diagrams and storyboard illustrations. I determined the project scope and interaction requirements and reviewed implemented functions. MelodyCompare does not use an AI model at runtime.
 
-I reviewed the resulting application and personally conducted manual functional testing in Microsoft Edge, including audio import, pitch-curve editing, version management, global and local comparison feedback, segment listening, Undo/Redo and WAV export.
+### Review of AI-assisted implementation
 
-The interface screenshots were captured from the actual running application and were not AI-generated. MelodyCompare does not use an AI model at runtime.
+The following examples describe the design requirements, implementation changes and functional checks. The manual checks are those recorded in the Files and tests section; the automated test results are the saved results from 13 November 2026, not a new test run.
+
+**Example 1 — version management.** I specified that numbered versions should start from Original unless a pending edit is being saved, and that changes to an existing numbered version should update that version independently. ChatGPT assisted with implementing the simplified version workflow. My manual checks covered version creation and switching, curve editing, comparison feedback and Undo/Redo. The version model and automated tests provide evidence of the resulting behaviour. Deletion remains irreversible and Original remains unchanged.
+
+**Example 2 — comparison and segment listening.** I specified that global and local scores should use Original as their reference and that users should be able to listen to the corresponding time range in each version. The implementation was refined to prepare the selected segments before sequential playback, avoiding media reloads between versions. My manual checks covered global and selected-segment feedback and individual and sequential playback. The saved controller tests provide additional simulated-interaction evidence. The remaining preparation delay and audio-quality limitations are described above.
+
+These examples document the requirements, resulting changes and checks; they do not claim that a particular defect was personally discovered or that a separate re-test was performed after every individual AI-assisted revision. No formal user study was conducted.
+
+### Visual evidence
+
+The original browser screenshots in the screenshots directory are genuine earlier captures, subsequently cropped and organised. They are not AI-generated and do not verify the latest build. The architecture diagram and AI-assisted storyboard are explanatory materials; AI-redrawn interface illustrations must not be treated as unmodified screenshots. The report's screenshot composites should preserve the original interface content and be labelled separately from illustrations.
+
+## References and Reused Materials
+
+The implementation uses standard browser technologies (HTML, CSS, JavaScript and the Web Audio API) and signal-processing techniques including smoothstep interpolation and overlap-add processing with Hann windows. The [Web Audio API reference on MDN](https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API) is provided as a technical reference for readers. Academic sources and course materials informing the interaction design are listed in the A2 report. AI assistance is disclosed above. Any directly reused third-party code or media should be attributed to its actual source and licence where applicable.
 
 ## Project scope
 
